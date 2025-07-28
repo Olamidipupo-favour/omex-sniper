@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎯 Pump.Fun Sniper Bot - Helius Powered</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="container">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-bullseye"></i>
+                    <span>Pump.Fun Sniper</span>
+                    <span class="version">v2.0</span>
+                </div>
+                <div class="header-stats">
+                    <div class="stat-item">
+                        <span class="stat-label">Total P&L</span>
+                        <span class="stat-value pnl" id="totalPnl">+0.0000 SOL</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Active Positions</span>
+                        <span class="stat-value" id="activePositions">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">SOL Balance</span>
+                        <span class="stat-value" id="solBalance">0.000</span>
+                    </div>
+                </div>
+                <div class="connection-status" id="connectionStatus">
+                    <i class="fas fa-circle"></i>
+                    <span>Disconnected</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main">
+        <div class="container">
+            <div class="grid">
+                <!-- Left Panel - Controls -->
+                <div class="panel controls-panel">
+                    <!-- Wallet Section -->
+                    <div class="section wallet-section">
+                        <h3><i class="fas fa-wallet"></i> Wallet Connection</h3>
+                        <div class="wallet-form" id="walletForm">
+                            <div class="input-group">
+                                <input type="password" id="privateKeyInput" placeholder="Enter private key (Base58 or JSON array)" class="input-field">
+                                <button class="btn btn-primary" id="connectWalletBtn">
+                                    <i class="fas fa-link"></i> Connect
+                                </button>
+                            </div>
+                            <div class="wallet-info" id="walletInfo" style="display: none;">
+                                <div class="wallet-address">
+                                    <span>Address:</span>
+                                    <code id="walletAddress"></code>
+                                </div>
+                                <div class="wallet-balance">
+                                    <span>Balance:</span>
+                                    <strong id="walletBalance">0.000 SOL</strong>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bot Settings -->
+                    <div class="section settings-section">
+                        <h3><i class="fas fa-cog"></i> Bot Settings</h3>
+                        <div class="settings-grid">
+                            <div class="setting-item">
+                                <label>SOL per snipe</label>
+                                <input type="number" id="solAmount" min="0.001" max="10" step="0.001" value="0.01" class="input-field">
+                            </div>
+                            <div class="setting-item">
+                                <label>Max positions</label>
+                                <input type="number" id="maxPositions" min="1" max="20" value="5" class="input-field">
+                            </div>
+                            <div class="setting-item">
+                                <label>Profit target %</label>
+                                <input type="number" id="profitTarget" min="1" max="1000" value="50" class="input-field">
+                            </div>
+                            <div class="setting-item">
+                                <label>Stop loss %</label>
+                                <input type="number" id="stopLoss" min="1" max="100" value="20" class="input-field">
+                            </div>
+                            <div class="setting-item">
+                                <label>Min market cap $</label>
+                                <input type="number" id="minMarketCap" min="0" value="1000" class="input-field">
+                            </div>
+                            <div class="setting-item">
+                                <label>Max market cap $</label>
+                                <input type="number" id="maxMarketCap" min="0" value="100000" class="input-field">
+                            </div>
+                        </div>
+                        
+                        <div class="toggle-group">
+                            <div class="toggle-item">
+                                <label class="toggle">
+                                    <input type="checkbox" id="autoBuy">
+                                    <span class="slider"></span>
+                                </label>
+                                <span class="toggle-label">Auto Buy</span>
+                            </div>
+                            <div class="toggle-item">
+                                <label class="toggle">
+                                    <input type="checkbox" id="autoSell" checked>
+                                    <span class="slider"></span>
+                                </label>
+                                <span class="toggle-label">Auto Sell</span>
+                            </div>
+                        </div>
+
+                        <button class="btn btn-secondary" id="updateSettingsBtn">
+                            <i class="fas fa-save"></i> Update Settings
+                        </button>
+                    </div>
+
+                    <!-- Controls -->
+                    <div class="section controls-section">
+                        <h3><i class="fas fa-play-circle"></i> Controls</h3>
+                        <div class="control-buttons">
+                            <button class="btn btn-success btn-large" id="startBtn">
+                                <i class="fas fa-rocket"></i> Start Monitoring
+                            </button>
+                            <button class="btn btn-danger btn-large" id="stopBtn" disabled>
+                                <i class="fas fa-stop"></i> Stop Monitoring
+                            </button>
+                        </div>
+                        <div class="status-indicator">
+                            <div class="status-dot" id="statusDot"></div>
+                            <span id="statusText">Ready</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Panel - Monitoring -->
+                <div class="panel monitoring-panel">
+                    <!-- Tabs -->
+                    <div class="tabs">
+                        <button class="tab-btn active" data-tab="monitoring">
+                            <i class="fas fa-chart-line"></i> Monitoring
+                        </button>
+                        <button class="tab-btn" data-tab="positions">
+                            <i class="fas fa-briefcase"></i> Positions
+                        </button>
+                        <button class="tab-btn" data-tab="transactions">
+                            <i class="fas fa-exchange-alt"></i> Transactions
+                        </button>
+                        <button class="tab-btn" data-tab="logs">
+                            <i class="fas fa-terminal"></i> Logs
+                        </button>
+                    </div>
+
+                    <!-- Tab Content -->
+                    <div class="tab-content">
+                        <!-- Monitoring Tab -->
+                        <div class="tab-pane active" id="monitoring">
+                            <div class="section-header">
+                                <h3><i class="fas fa-eye"></i> New Tokens Detected</h3>
+                                <div class="filters">
+                                    <button class="btn btn-small" id="clearTokensBtn">
+                                        <i class="fas fa-trash"></i> Clear
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="tokens-container">
+                                <div class="tokens-table" id="tokensTable">
+                                    <div class="table-header">
+                                        <div class="col-symbol">Symbol</div>
+                                        <div class="col-name">Name</div>
+                                        <div class="col-mint">Mint</div>
+                                        <div class="col-market-cap">Market Cap</div>
+                                        <div class="col-price">Price</div>
+                                        <div class="col-time">Time</div>
+                                        <div class="col-action">Action</div>
+                                    </div>
+                                    <div class="table-body" id="tokensTableBody">
+                                        <div class="empty-state">
+                                            <i class="fas fa-search"></i>
+                                            <p>Waiting for new tokens...</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Positions Tab -->
+                        <div class="tab-pane" id="positions">
+                            <div class="section-header">
+                                <h3><i class="fas fa-briefcase"></i> Active Positions</h3>
+                                <div class="position-stats">
+                                    <span class="stat">Total Invested: <strong id="totalInvested">0.000 SOL</strong></span>
+                                    <span class="stat">P&L: <strong id="positionsPnl" class="pnl">+0.000 SOL</strong></span>
+                                </div>
+                            </div>
+                            <div class="positions-container">
+                                <div class="positions-table" id="positionsTable">
+                                    <div class="table-header">
+                                        <div class="col-token">Token</div>
+                                        <div class="col-entry">Entry</div>
+                                        <div class="col-current">Current</div>
+                                        <div class="col-amount">Amount</div>
+                                        <div class="col-pnl">P&L</div>
+                                        <div class="col-status">Status</div>
+                                        <div class="col-action">Action</div>
+                                    </div>
+                                    <div class="table-body" id="positionsTableBody">
+                                        <div class="empty-state">
+                                            <i class="fas fa-briefcase"></i>
+                                            <p>No active positions</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Transactions Tab -->
+                        <div class="tab-pane" id="transactions">
+                            <div class="section-header">
+                                <h3><i class="fas fa-exchange-alt"></i> Transaction History</h3>
+                                <button class="btn btn-small" id="clearTransactionsBtn">
+                                    <i class="fas fa-trash"></i> Clear
+                                </button>
+                            </div>
+                            <div class="transactions-container">
+                                <div class="transactions-list" id="transactionsList">
+                                    <div class="empty-state">
+                                        <i class="fas fa-exchange-alt"></i>
+                                        <p>No transactions yet</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Logs Tab -->
+                        <div class="tab-pane" id="logs">
+                            <div class="section-header">
+                                <h3><i class="fas fa-terminal"></i> System Logs</h3>
+                                <button class="btn btn-small" id="clearLogsBtn">
+                                    <i class="fas fa-trash"></i> Clear
+                                </button>
+                            </div>
+                            <div class="logs-container">
+                                <div class="logs-content" id="logsContent">
+                                    <div class="log-entry">
+                                        <span class="timestamp">[00:00:00]</span>
+                                        <span class="message">Welcome to Pump.Fun Sniper Bot</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="spinner"></div>
+        <p>Processing...</p>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html> 

@@ -1,0 +1,16 @@
+solana
+websockets
+aiohttp
+PyQt5
+base58
+construct
+borsh-construct
+cryptography
+keyring
+requests
+asyncio-mqtt
+python-dotenv
+pydantic
+flask
+flask-socketio
+eventlet
