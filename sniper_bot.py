@@ -196,35 +196,52 @@ class SniperBot:
         logger.info("Starting Pump.Fun sniper bot...")
         self.is_running = True
         
+        monitor_task = None
         try:
-            # Start monitoring new tokens
+            # Start position monitoring in the background (don't await it)
+            monitor_task = asyncio.create_task(self._monitor_positions())
+            
+            # Start monitoring new tokens (this will block until monitoring stops)
             await self.monitor.start_monitoring()
             
-            # Start position monitoring loop
-            asyncio.create_task(self._monitor_positions())
-            
-            logger.info("Bot started successfully")
-            
+        except asyncio.CancelledError:
+            logger.info("Bot monitoring cancelled")
         except Exception as e:
             logger.error(f"Failed to start monitoring: {e}")
             self._emit_callback('error', f"Failed to start monitoring: {e}")
             raise
+        finally:
+            # Cancel the position monitoring task when done
+            if monitor_task and not monitor_task.done():
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except asyncio.CancelledError:
+                    logger.debug("Position monitoring task cancelled")
+            
+            self.is_running = False
+            logger.info("Bot monitoring completed")
     
     def stop_monitoring(self):
         """Stop the monitoring process"""
         logger.info("Stopping bot...")
         self.is_running = False
+        
+        # Stop the monitor without creating new async tasks
         if hasattr(self.monitor, 'stop_monitoring'):
-            asyncio.create_task(self.monitor.stop_monitoring())
+            self.monitor.stop_monitoring()
+        
         logger.info("Bot stopped")
     
     async def _handle_new_token(self, token: TokenInfo):
         """Handle new token detection"""
         try:
-            logger.info(f"new token detected: {token}")
             logger.info(f"New token detected: {token.symbol} ({token.name})")
             logger.info(f"  Market Cap: ${token.market_cap:,.0f}")
             logger.info(f"  Price: ${token.price:.8f}")
+            logger.info(f"  SOL in pool: {token.sol_in_pool}")
+            logger.info(f"  Tokens in pool: {token.tokens_in_pool:,.0f}")
+            logger.info(f"  Initial buy: {token.initial_buy:,.0f}")
             
             # Emit to UI
             self._emit_callback('new_token', token)
@@ -495,19 +512,27 @@ class SniperBot:
     
     async def _monitor_positions(self):
         """Monitor positions for updates"""
-        while self.is_running:
-            try:
-                # Update total P&L
-                current_total = sum(pos.current_pnl for pos in self.positions if pos.is_active)
-                
-                if abs(current_total - self.total_profit_loss) > 0.001:  # Significant change
-                    logger.debug(f"Total P&L: {current_total:+.4f} SOL")
-                
-                await asyncio.sleep(5)  # Update every 5 seconds
-                
-            except Exception as e:
-                logger.error(f"Error monitoring positions: {e}")
-                await asyncio.sleep(10)
+        try:
+            while self.is_running:
+                try:
+                    # Update total P&L
+                    current_total = sum(pos.current_pnl for pos in self.positions if pos.is_active)
+                    
+                    if abs(current_total - self.total_profit_loss) > 0.001:  # Significant change
+                        logger.debug(f"Total P&L: {current_total:+.4f} SOL")
+                    
+                    await asyncio.sleep(5)  # Update every 5 seconds
+                    
+                except asyncio.CancelledError:
+                    logger.debug("Position monitoring cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"Error monitoring positions: {e}")
+                    await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            logger.debug("Position monitoring task cancelled")
+        finally:
+            logger.debug("Position monitoring stopped")
     
     def get_status(self) -> Dict[str, Any]:
         """Get current bot status"""

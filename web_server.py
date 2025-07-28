@@ -31,7 +31,23 @@ class WebSocketHandler:
             'price': token.price,
             'created_timestamp': token.created_timestamp,
             'nsfw': token.nsfw,
-            'description': token.description
+            'description': token.description,
+            'image': token.image,
+            'creator': token.creator,
+            'twitter': token.twitter,
+            'telegram': token.telegram,
+            'website': token.website,
+            'usd_market_cap': token.usd_market_cap,
+            # PumpPortal pool data fields
+            'sol_in_pool': token.sol_in_pool,
+            'tokens_in_pool': token.tokens_in_pool,
+            'initial_buy': token.initial_buy,
+            'sol_amount': token.sol_amount,
+            'new_token_balance': token.new_token_balance,
+            'trader_public_key': token.trader_public_key,
+            'tx_type': token.tx_type,
+            'signature': token.signature,
+            'pool': token.pool
         })
     
     @staticmethod
@@ -139,6 +155,10 @@ def start_monitoring():
                 logger.error(f"Error in bot monitoring: {e}")
             finally:
                 is_monitoring = False
+                try:
+                    loop.close()
+                except:
+                    pass
         
         bot_thread = threading.Thread(target=run_bot)
         bot_thread.daemon = True
@@ -155,8 +175,14 @@ def stop_monitoring():
     global is_monitoring
     
     try:
+        # Simply set the flag to stop monitoring
         bot.stop_monitoring()
         is_monitoring = False
+        
+        # Give the monitoring thread time to clean up
+        if bot_thread and bot_thread.is_alive():
+            bot_thread.join(timeout=2.0)
+        
         return jsonify({'success': True})
         
     except Exception as e:

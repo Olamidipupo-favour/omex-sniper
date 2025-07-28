@@ -56,10 +56,32 @@
                                     <i class="fas fa-link"></i> Connect
                                 </button>
                             </div>
+                            <div class="wallet-storage-option">
+                                <label class="toggle">
+                                    <input type="checkbox" id="storePrivateKey">
+                                    <span class="slider"></span>
+                                </label>
+                                <span class="toggle-label">
+                                    <i class="fas fa-save"></i> Remember private key
+                                    <small>(stores locally on this device)</small>
+                                </span>
+                            </div>
+                            <div class="security-warning" id="securityWarning" style="display: none;">
+                                <div class="warning-content">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                    <div class="warning-text">
+                                        <strong>Security Notice:</strong>
+                                        <p>Your private key will be stored in your browser's local storage. Only enable this on trusted devices. Clear browser data or disable this option to remove the stored key.</p>
+                                    </div>
+                                </div>
+                            </div>
                             <div class="wallet-info" id="walletInfo" style="display: none;">
                                 <div class="wallet-address">
                                     <span>Address:</span>
                                     <code id="walletAddress"></code>
+                                    <button class="btn btn-tiny edit-key-btn" id="editKeyBtn" title="Edit Private Key">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
                                 </div>
                                 <div class="wallet-balance">
                                     <span>Balance:</span>
@@ -177,7 +199,10 @@
                                         <div class="col-mint">Mint</div>
                                         <div class="col-market-cap">Market Cap</div>
                                         <div class="col-price">Price</div>
+                                        <div class="col-pool-data">Pool Data</div>
+                                        <div class="col-initial-buy">Initial Buy</div>
                                         <div class="col-time">Time</div>
+                                        <div class="col-links">Links</div>
                                         <div class="col-action">Action</div>
                                     </div>
                                     <div class="table-body" id="tokensTableBody">

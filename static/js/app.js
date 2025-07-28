@@ -17,12 +17,15 @@ class SniperBotApp {
         this.setupEventListeners();
         this.connectWebSocket();
         this.startUIUpdates();
+        this.loadStoredPrivateKey();
         this.loadInitialData();
     }
     
     setupEventListeners() {
         // Wallet connection
         document.getElementById('connectWalletBtn').addEventListener('click', () => this.connectWallet());
+        document.getElementById('editKeyBtn').addEventListener('click', () => this.editPrivateKey());
+        document.getElementById('storePrivateKey').addEventListener('change', (e) => this.handleStorePrivateKeyChange(e));
         
         // Bot controls
         document.getElementById('startBtn').addEventListener('click', () => this.startBot());
@@ -88,6 +91,94 @@ class SniperBotApp {
         }
     }
     
+    loadStoredPrivateKey() {
+        try {
+            const storedKey = localStorage.getItem('pump_sniper_private_key');
+            const shouldStore = localStorage.getItem('pump_sniper_store_key') === 'true';
+            
+            if (storedKey && shouldStore) {
+                document.getElementById('privateKeyInput').value = storedKey;
+                document.getElementById('storePrivateKey').checked = true;
+                document.getElementById('securityWarning').style.display = 'block';
+                this.addLog('Private key loaded from storage', 'info');
+            }
+        } catch (error) {
+            console.error('Failed to load stored private key:', error);
+        }
+    }
+
+    handleStorePrivateKeyChange(event) {
+        const shouldStore = event.target.checked;
+        const securityWarning = document.getElementById('securityWarning');
+        
+        // Show/hide security warning
+        if (shouldStore) {
+            securityWarning.style.display = 'block';
+        } else {
+            securityWarning.style.display = 'none';
+        }
+        
+        try {
+            if (shouldStore) {
+                const privateKey = document.getElementById('privateKeyInput').value.trim();
+                if (privateKey) {
+                    localStorage.setItem('pump_sniper_private_key', privateKey);
+                    localStorage.setItem('pump_sniper_store_key', 'true');
+                    this.showToast('Private key saved to local storage', 'success');
+                } else {
+                    this.showToast('Enter a private key first to save it', 'warning');
+                    event.target.checked = false;
+                    securityWarning.style.display = 'none';
+                }
+            } else {
+                localStorage.removeItem('pump_sniper_private_key');
+                localStorage.removeItem('pump_sniper_store_key');
+                this.showToast('Private key removed from storage', 'info');
+            }
+        } catch (error) {
+            console.error('Failed to handle private key storage:', error);
+            this.showToast('Failed to save private key', 'error');
+            event.target.checked = false;
+            securityWarning.style.display = 'none';
+        }
+    }
+
+    editPrivateKey() {
+        if (!this.walletConnected) {
+            return;
+        }
+
+        // Show input dialog for editing private key
+        const currentKey = localStorage.getItem('pump_sniper_private_key') || '';
+        const newKey = prompt('Enter new private key:', currentKey);
+        
+        if (newKey !== null && newKey.trim() !== '') {
+            // Update the input field
+            document.getElementById('privateKeyInput').value = newKey.trim();
+            
+            // Update localStorage if storing is enabled
+            if (document.getElementById('storePrivateKey').checked) {
+                try {
+                    localStorage.setItem('pump_sniper_private_key', newKey.trim());
+                    this.showToast('Private key updated', 'success');
+                } catch (error) {
+                    console.error('Failed to update stored private key:', error);
+                    this.showToast('Failed to update stored key', 'error');
+                }
+            }
+            
+            // Disconnect current wallet and prompt to reconnect
+            this.walletConnected = false;
+            document.getElementById('walletInfo').style.display = 'none';
+            document.getElementById('walletForm').style.display = 'block';
+            document.getElementById('statusText').textContent = 'Private key updated - please reconnect';
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = true;
+            
+            this.showToast('Please reconnect with the new private key', 'info');
+        }
+    }
+
     async connectWallet() {
         const privateKey = document.getElementById('privateKeyInput').value.trim();
         
@@ -111,12 +202,29 @@ class SniperBotApp {
             
             if (result.success) {
                 this.walletConnected = true;
+                
+                // Update UI
                 document.getElementById('walletAddress').textContent = this.truncateAddress(result.wallet_address);
                 document.getElementById('walletBalance').textContent = result.sol_balance.toFixed(4);
                 document.getElementById('statusText').textContent = 'Wallet Connected';
+                document.getElementById('walletInfo').style.display = 'block';
+                document.getElementById('walletForm').style.display = 'none';
                 
-                // Clear private key field for security
-                document.getElementById('privateKeyInput').value = '';
+                // Handle private key storage
+                if (document.getElementById('storePrivateKey').checked) {
+                    try {
+                        localStorage.setItem('pump_sniper_private_key', privateKey);
+                        localStorage.setItem('pump_sniper_store_key', 'true');
+                    } catch (error) {
+                        console.error('Failed to store private key:', error);
+                        this.showToast('Failed to save private key to storage', 'warning');
+                    }
+                }
+                
+                // Clear private key field for security if not storing
+                if (!document.getElementById('storePrivateKey').checked) {
+                    document.getElementById('privateKeyInput').value = '';
+                }
                 
                 this.showToast('Wallet connected successfully!', 'success');
                 this.addLog(`Wallet connected: ${result.wallet_address}`, 'success');
@@ -381,11 +489,27 @@ class SniperBotApp {
                 <div class="col-mint">
                     <span class="mint-address">${token.mint}</span>
                     <button class="btn btn-tiny copy-mint" data-mint="${token.mint}" title="Copy Mint"><i class="fas fa-copy"></i></button>
-                    <a href="https://solscan.io/token/${token.mint}" target="_blank" class="solscan-link" title="View on Solscan"><i class="fas fa-external-link-alt"></i></a>
                 </div>
                 <div class="col-market-cap">$${token.market_cap ? token.market_cap.toLocaleString() : '0'}</div>
                 <div class="col-price">$${token.price ? token.price.toFixed(8) : '0.00000000'}</div>
+                <div class="col-pool-data">
+                    <div class="pool-info">
+                        <small>SOL: ${token.sol_in_pool || 0}</small>
+                        <small>Tokens: ${token.tokens_in_pool ? (token.tokens_in_pool / 1000000).toFixed(1) + 'M' : '0'}</small>
+                    </div>
+                </div>
+                <div class="col-initial-buy">
+                    <span class="initial-buy">${token.initial_buy ? (token.initial_buy / 1000000).toFixed(1) + 'M' : '0'}</span>
+                </div>
                 <div class="col-time">${this.formatTime(token.created_timestamp || token.timestamp)}</div>
+                <div class="col-links">
+                    <a href="https://pump.fun/${token.mint}" target="_blank" class="pump-link" title="View on Pump.Fun">
+                        <i class="fas fa-rocket"></i>
+                    </a>
+                    <a href="https://solscan.io/token/${token.mint}" target="_blank" class="solscan-link" title="View on Solscan">
+                        <i class="fas fa-search"></i>
+                    </a>
+                </div>
                 <div class="col-action">
                     <button class="btn btn-small buy-btn" data-mint="${token.mint}">
                         <i class="fas fa-shopping-cart"></i> Buy
@@ -593,7 +717,13 @@ class SniperBotApp {
                 document.getElementById('walletAddress').textContent = this.truncateAddress(status.wallet_address);
                 document.getElementById('walletBalance').textContent = status.sol_balance.toFixed(4);
                 document.getElementById('statusText').textContent = 'Wallet Connected';
+                document.getElementById('walletInfo').style.display = 'block';
+                document.getElementById('walletForm').style.display = 'none';
                 document.getElementById('startBtn').disabled = false;
+            } else {
+                // Show wallet form if not connected
+                document.getElementById('walletInfo').style.display = 'none';
+                document.getElementById('walletForm').style.display = 'block';
             }
             
             if (status.success && status.is_monitoring) {

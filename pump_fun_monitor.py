@@ -31,6 +31,16 @@ class TokenInfo:
     telegram: str = ""
     website: str = ""
     nsfw: bool = False
+    # Additional PumpPortal fields
+    sol_in_pool: float = 0.0
+    tokens_in_pool: float = 0.0
+    initial_buy: float = 0.0
+    sol_amount: float = 0.0
+    new_token_balance: float = 0.0
+    trader_public_key: str = ""
+    tx_type: str = ""
+    signature: str = ""
+    pool: str = ""
     
 @dataclass
 class TradeInfo:
@@ -132,36 +142,53 @@ class PumpPortalMonitor:
     
     def parse_token_data(self, data: Dict[str, Any]) -> TokenInfo:
         """Parse new token data from WebSocket"""
-        # Try all possible field names for market cap and price
-        print(f"data: {data}")
-        exit()
-        market_cap = (
-            data.get("market_cap") or
-            data.get("usd_market_cap") or
-            data.get("marketCap") or
-            0.0
-        )
-        price = (
-            data.get("price") or
-            data.get("current_price") or
-            data.get("price_usd") or
-            0.0
-        )
+        # Calculate price from pool data
+        sol_in_pool = data.get("solInPool", 0.0)
+        tokens_in_pool = data.get("tokensInPool", 0.0)
+        
+        # Price per token = SOL in pool / tokens in pool
+        price = sol_in_pool / tokens_in_pool if tokens_in_pool > 0 else 0.0
+        
+        # Market cap in SOL
+        market_cap_sol = data.get("marketCapSol", 0.0)
+        
+        # Convert SOL market cap to USD (approximate, using ~$100/SOL)
+        # TODO: Get real-time SOL price from an API for more accuracy
+        sol_price_usd = 100.0  # Approximate SOL price
+        market_cap_usd = market_cap_sol * sol_price_usd
+        
+        # Debug logging
+        logger.info(f"Token data parsed:")
+        logger.info(f"  SOL in pool: {sol_in_pool}")
+        logger.info(f"  Tokens in pool: {tokens_in_pool:,.0f}")
+        logger.info(f"  Calculated price: ${price:.8f}")
+        logger.info(f"  Market cap (SOL): {market_cap_sol:.2f}")
+        logger.info(f"  Market cap (USD): ${market_cap_usd:,.0f}")
+        
         return TokenInfo(
             mint=data.get("mint", ""),
             name=data.get("name", ""),
             symbol=data.get("symbol", ""),
             description=data.get("description", ""),
-            image=data.get("image", ""),
-            created_timestamp=data.get("timestamp", int(datetime.now().timestamp())),
-            usd_market_cap=data.get("usd_market_cap", 0.0),
-            market_cap=market_cap,
+            image=data.get("uri", ""),  # URI field contains the image/metadata link
+            created_timestamp=int(datetime.now().timestamp()),  # Current time since no timestamp in data
+            usd_market_cap=market_cap_usd,
+            market_cap=market_cap_usd,  # Use USD market cap for display
             price=price,
-            creator=data.get("creator", ""),
-            twitter=data.get("twitter", ""),
-            telegram=data.get("telegram", ""),
-            website=data.get("website", ""),
-            nsfw=data.get("nsfw", False)
+            creator=data.get("traderPublicKey", ""),  # The trader who created the token
+            twitter="",
+            telegram="",
+            website="",
+            nsfw=False,
+            sol_in_pool=data.get("solInPool", 0.0),
+            tokens_in_pool=data.get("tokensInPool", 0.0),
+            initial_buy=data.get("initialBuy", 0.0),
+            sol_amount=data.get("solAmount", 0.0),
+            new_token_balance=data.get("newTokenBalance", 0.0),
+            trader_public_key=data.get("traderPublicKey", ""),
+            tx_type=data.get("txType", ""),
+            signature=data.get("signature", ""),
+            pool=data.get("pool", "")
         )
     
     def parse_trade_data(self, data: Dict[str, Any]) -> TradeInfo:
@@ -182,18 +209,19 @@ class PumpPortalMonitor:
         try:
             data = json.loads(message)
             
+            # Debug: Log the raw data structure
+            logger.info(f"Raw WebSocket data: {json.dumps(data, indent=2)}")
+            
             # Check if this is a new token event
             if "mint" in data and data.get("mint") not in self.known_tokens:
                 # This looks like a new token
                 token = self.parse_token_data(data)
                 self.known_tokens.add(token.mint)
-                logger.info(f"🚀 NEW TOKEN: {token}")
                 
                 logger.info(f"🚀 NEW TOKEN: {token.symbol} ({token.name}) - {token.mint}")
-                logger.info(f"   Market Cap: ${token.market_cap:,.0f} | Price: {token.price}")
+                logger.info(f"   Market Cap: ${token.market_cap:,.0f} | Price: ${token.price:.8f}")
                 
                 if self.new_token_callback:
-                    
                     if asyncio.iscoroutinefunction(self.new_token_callback):
                         await self.new_token_callback(token)
                     else:
@@ -216,6 +244,7 @@ class PumpPortalMonitor:
             logger.warning(f"Invalid JSON received: {message[:100]}...")
         except Exception as e:
             logger.error(f"Error handling message: {e}")
+            logger.error(f"Message that caused error: {message[:200]}...")
     
     async def start_monitoring(self):
         """Start monitoring for new tokens and trades"""
@@ -225,7 +254,7 @@ class PumpPortalMonitor:
         while self.monitoring:
             try:
                 # Connect if not connected
-                if not self.websocket or self.websocket.closed:
+                if not self.websocket or self._is_websocket_closed():
                     if not await self.connect_websocket():
                         if self.connection_attempts >= self.max_connection_attempts:
                             logger.error("❌ Max connection attempts reached. Stopping monitoring.")
@@ -238,37 +267,79 @@ class PumpPortalMonitor:
                     await asyncio.sleep(5)
                     continue
                 
-                # Listen for messages
-                async for message in self.websocket:
-                    if not self.monitoring:
-                        break
-                    await self.handle_message(message)
+                # Listen for messages with proper cleanup
+                try:
+                    async for message in self.websocket:
+                        if not self.monitoring:
+                            break
+                        await self.handle_message(message)
+                except asyncio.CancelledError:
+                    logger.info("Message listening cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"Error in message loop: {e}")
+                    await asyncio.sleep(2)
                         
             except websockets.exceptions.ConnectionClosed:
                 logger.warning("⚠️ WebSocket connection closed. Reconnecting...")
                 self.websocket = None
                 await asyncio.sleep(2)
                 
+            except asyncio.CancelledError:
+                logger.info("Monitoring loop cancelled")
+                break
+                
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {e}")
                 await asyncio.sleep(5)
         
+        # Ensure proper cleanup
+        await self.close_connection()
         logger.info("⏹ Stopped PumpPortal monitoring")
+    
+    def _is_websocket_closed(self):
+        """Check if websocket connection is closed"""
+        if not self.websocket:
+            return True
+        
+        try:
+            # Try to check the connection state
+            return self.websocket.closed if hasattr(self.websocket, 'closed') else False
+        except Exception:
+            # If we can't check the state, assume it's closed
+            return True
     
     def stop_monitoring(self):
         """Stop monitoring"""
         self.monitoring = False
+        
+        # Close websocket connection synchronously if possible
         if self.websocket:
-            asyncio.create_task(self.close_connection())
+            try:
+                # Try to get the current event loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If loop is running, schedule the close
+                    asyncio.create_task(self.close_connection())
+                else:
+                    # If no loop is running, we can't close gracefully
+                    # Just set websocket to None
+                    self.websocket = None
+            except RuntimeError:
+                # No event loop, just set to None
+                self.websocket = None
     
     async def close_connection(self):
         """Close WebSocket connection"""
         if self.websocket:
             try:
+                # Close the websocket properly
                 await self.websocket.close()
-            except:
-                pass
-            self.websocket = None
+                logger.debug("WebSocket connection closed")
+            except Exception as e:
+                logger.debug(f"Error closing websocket: {e}")
+            finally:
+                self.websocket = None
     
     def is_token_suitable_for_sniping(self, token: TokenInfo, min_market_cap: float = 1000, max_market_cap: float = 100000) -> bool:
         """Check if token meets criteria for sniping"""
