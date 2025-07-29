@@ -1,0 +1,21 @@
+{
+  "private_key": "YOUR_BASE58_PRIVATE_KEY_HERE",
+  "bot_settings": {
+    "sol_per_snipe": 0.01,
+    "max_positions": 5,
+    "profit_target_percent": 50.0,
+    "stop_loss_percent": 20.0,
+    "min_market_cap": 1000.0,
+    "max_market_cap": 100000.0,
+    "auto_buy": false,
+    "auto_sell": true
+  },
+  "bot_state": {
+    "is_running": false,
+    "wallet_connected": false,
+    "wallet_address": "",
+    "sol_balance": 0.0,
+    "total_pnl": 0.0,
+    "active_positions": 0
+  }
+} 

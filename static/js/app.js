@@ -17,15 +17,12 @@ class SniperBotApp {
         this.setupEventListeners();
         this.connectWebSocket();
         this.startUIUpdates();
-        this.loadStoredPrivateKey();
         this.loadInitialData();
     }
     
     setupEventListeners() {
         // Wallet connection
         document.getElementById('connectWalletBtn').addEventListener('click', () => this.connectWallet());
-        document.getElementById('editKeyBtn').addEventListener('click', () => this.editPrivateKey());
-        document.getElementById('storePrivateKey').addEventListener('change', (e) => this.handleStorePrivateKeyChange(e));
         
         // Bot controls
         document.getElementById('startBtn').addEventListener('click', () => this.startBot());
@@ -96,94 +93,6 @@ class SniperBotApp {
         }
     }
     
-    loadStoredPrivateKey() {
-        try {
-            const storedKey = localStorage.getItem('pump_sniper_private_key');
-            const shouldStore = localStorage.getItem('pump_sniper_store_key') === 'true';
-            
-            if (storedKey && shouldStore) {
-                document.getElementById('privateKeyInput').value = storedKey;
-                document.getElementById('storePrivateKey').checked = true;
-                document.getElementById('securityWarning').style.display = 'block';
-                this.addLog('Private key loaded from storage', 'info');
-            }
-        } catch (error) {
-            console.error('Failed to load stored private key:', error);
-        }
-    }
-
-    handleStorePrivateKeyChange(event) {
-        const shouldStore = event.target.checked;
-        const securityWarning = document.getElementById('securityWarning');
-        
-        // Show/hide security warning
-        if (shouldStore) {
-            securityWarning.style.display = 'block';
-        } else {
-            securityWarning.style.display = 'none';
-        }
-        
-        try {
-            if (shouldStore) {
-                const privateKey = document.getElementById('privateKeyInput').value.trim();
-                if (privateKey) {
-                    localStorage.setItem('pump_sniper_private_key', privateKey);
-                    localStorage.setItem('pump_sniper_store_key', 'true');
-                    this.showToast('Private key saved to local storage', 'success');
-                } else {
-                    this.showToast('Enter a private key first to save it', 'warning');
-                    event.target.checked = false;
-                    securityWarning.style.display = 'none';
-                }
-            } else {
-                localStorage.removeItem('pump_sniper_private_key');
-                localStorage.removeItem('pump_sniper_store_key');
-                this.showToast('Private key removed from storage', 'info');
-            }
-        } catch (error) {
-            console.error('Failed to handle private key storage:', error);
-            this.showToast('Failed to save private key', 'error');
-            event.target.checked = false;
-            securityWarning.style.display = 'none';
-        }
-    }
-
-    editPrivateKey() {
-        if (!this.walletConnected) {
-            return;
-        }
-
-        // Show input dialog for editing private key
-        const currentKey = localStorage.getItem('pump_sniper_private_key') || '';
-        const newKey = prompt('Enter new private key:', currentKey);
-        
-        if (newKey !== null && newKey.trim() !== '') {
-            // Update the input field
-            document.getElementById('privateKeyInput').value = newKey.trim();
-            
-            // Update localStorage if storing is enabled
-            if (document.getElementById('storePrivateKey').checked) {
-                try {
-                    localStorage.setItem('pump_sniper_private_key', newKey.trim());
-                    this.showToast('Private key updated', 'success');
-                } catch (error) {
-                    console.error('Failed to update stored private key:', error);
-                    this.showToast('Failed to update stored key', 'error');
-                }
-            }
-            
-            // Disconnect current wallet and prompt to reconnect
-            this.walletConnected = false;
-            document.getElementById('walletInfo').style.display = 'none';
-            document.getElementById('walletForm').style.display = 'block';
-            document.getElementById('statusText').textContent = 'Private key updated - please reconnect';
-            document.getElementById('startBtn').disabled = true;
-            document.getElementById('stopBtn').disabled = true;
-            
-            this.showToast('Please reconnect with the new private key', 'info');
-        }
-    }
-
     async connectWallet() {
         const privateKey = document.getElementById('privateKeyInput').value.trim();
         
@@ -195,70 +104,61 @@ class SniperBotApp {
         this.showLoading(true);
         
         try {
-            const response = await fetch('/api/connect_wallet', {
+            const response = await fetch('/api/wallet/connect', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ private_key: privateKey })
+                body: JSON.stringify({
+                    private_key: privateKey
+                })
             });
             
             const result = await response.json();
             
             if (result.success) {
                 this.walletConnected = true;
+                document.getElementById('walletAddress').textContent = result.wallet_address;
+                document.getElementById('walletBalance').textContent = `${result.sol_balance.toFixed(3)} SOL`;
+                document.getElementById('solBalance').textContent = result.sol_balance.toFixed(3);
                 
-                // Update UI
-                document.getElementById('walletAddress').textContent = this.truncateAddress(result.wallet_address);
-                document.getElementById('walletBalance').textContent = result.sol_balance.toFixed(4);
-                document.getElementById('statusText').textContent = 'Wallet Connected';
-                document.getElementById('walletInfo').style.display = 'block';
+                // Hide wallet form and show wallet info
                 document.getElementById('walletForm').style.display = 'none';
+                document.getElementById('walletInfo').style.display = 'block';
                 
-                // Handle private key storage
-                if (document.getElementById('storePrivateKey').checked) {
-                    try {
-                        localStorage.setItem('pump_sniper_private_key', privateKey);
-                        localStorage.setItem('pump_sniper_store_key', 'true');
-                    } catch (error) {
-                        console.error('Failed to store private key:', error);
-                        this.showToast('Failed to save private key to storage', 'warning');
-                    }
-                }
-                
-                // Clear private key field for security if not storing
-                if (!document.getElementById('storePrivateKey').checked) {
-                    document.getElementById('privateKeyInput').value = '';
-                }
+                // Clear private key input for security
+                document.getElementById('privateKeyInput').value = '';
                 
                 this.showToast('Wallet connected successfully!', 'success');
-                this.addLog(`Wallet connected: ${result.wallet_address}`, 'success');
+                this.addLog(`Wallet connected: ${this.truncateAddress(result.wallet_address)}`, 'success');
                 
-                // Enable bot controls
-                document.getElementById('startBtn').disabled = false;
-                
+                this.updateBotControls();
             } else {
-                this.showToast(`Failed to connect wallet: ${result.error}`, 'error');
+                this.showToast(result.error || 'Failed to connect wallet', 'error');
             }
-            
         } catch (error) {
             console.error('Wallet connection error:', error);
-            this.showToast('Wallet connection failed', 'error');
+            this.showToast('Connection failed', 'error');
+        } finally {
+            this.showLoading(false);
         }
-        
-        this.showLoading(false);
     }
     
     async startBot() {
         if (!this.walletConnected) {
-            this.showToast('Please connect wallet first', 'error');
+            this.showToast('Please connect your wallet first', 'warning');
+            return;
+        }
+        
+        if (this.botRunning) {
+            this.showToast('Bot is already running', 'info');
             return;
         }
         
         this.showLoading(true);
         
         try {
-            const response = await fetch('/api/start_monitoring', {
+            const response = await fetch('/api/bot/start', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -269,30 +169,30 @@ class SniperBotApp {
             
             if (result.success) {
                 this.botRunning = true;
-                document.getElementById('statusText').textContent = 'Bot Running';
-                document.getElementById('startBtn').disabled = true;
-                document.getElementById('stopBtn').disabled = false;
-                
-                this.showToast('Bot started successfully!', 'success');
+                this.updateBotControls();
+                this.showToast('Bot monitoring started!', 'success');
                 this.addLog('Bot monitoring started', 'success');
-                
             } else {
-                this.showToast(`Failed to start bot: ${result.error}`, 'error');
+                this.showToast(result.error || 'Failed to start bot', 'error');
             }
-            
         } catch (error) {
-            console.error('Start bot error:', error);
+            console.error('Error starting bot:', error);
             this.showToast('Failed to start bot', 'error');
+        } finally {
+            this.showLoading(false);
         }
-        
-        this.showLoading(false);
     }
     
     async stopBot() {
+        if (!this.botRunning) {
+            this.showToast('Bot is not running', 'info');
+            return;
+        }
+        
         this.showLoading(true);
         
         try {
-            const response = await fetch('/api/stop_monitoring', {
+            const response = await fetch('/api/bot/stop', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -303,42 +203,41 @@ class SniperBotApp {
             
             if (result.success) {
                 this.botRunning = false;
-                document.getElementById('statusText').textContent = 'Bot Stopped';
-                document.getElementById('startBtn').disabled = false;
-                document.getElementById('stopBtn').disabled = true;
-                
-                this.showToast('Bot stopped successfully!', 'info');
+                this.updateBotControls();
+                this.showToast('Bot monitoring stopped', 'info');
                 this.addLog('Bot monitoring stopped', 'info');
-                
             } else {
-                this.showToast(`Failed to stop bot: ${result.error}`, 'error');
+                this.showToast(result.error || 'Failed to stop bot', 'error');
             }
-            
         } catch (error) {
-            console.error('Stop bot error:', error);
+            console.error('Error stopping bot:', error);
             this.showToast('Failed to stop bot', 'error');
+        } finally {
+            this.showLoading(false);
         }
-        
-        this.showLoading(false);
     }
     
     async updateSettings() {
+        this.showLoading(true);
+        
         try {
-            const response = await fetch('/api/update_settings', {
+            const settings = {
+                sol_per_snipe: parseFloat(document.getElementById('solAmount').value),
+                max_positions: parseInt(document.getElementById('maxPositions').value),
+                profit_target_percent: parseFloat(document.getElementById('profitTarget').value),
+                stop_loss_percent: parseFloat(document.getElementById('stopLoss').value),
+                min_market_cap: parseFloat(document.getElementById('minMarketCap').value),
+                max_market_cap: parseFloat(document.getElementById('maxMarketCap').value),
+                auto_buy: document.getElementById('autoBuy').checked,
+                auto_sell: document.getElementById('autoSell').checked
+            };
+            
+            const response = await fetch('/api/settings/update', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    sol_amount: parseFloat(document.getElementById('solAmount').value),
-                    max_positions: parseInt(document.getElementById('maxPositions').value),
-                    profit_target: parseFloat(document.getElementById('profitTarget').value),
-                    stop_loss: parseFloat(document.getElementById('stopLoss').value),
-                    auto_buy_enabled: document.getElementById('autoBuy').checked,
-                    auto_sell_enabled: document.getElementById('autoSell').checked,
-                    min_market_cap: parseFloat(document.getElementById('minMarketCap').value),
-                    max_market_cap: parseFloat(document.getElementById('maxMarketCap').value)
-                })
+                body: JSON.stringify(settings)
             });
             
             const result = await response.json();
@@ -347,79 +246,85 @@ class SniperBotApp {
                 this.showToast('Settings updated successfully!', 'success');
                 this.addLog('Bot settings updated', 'info');
             } else {
-                this.showToast(`Failed to update settings: ${result.error}`, 'error');
+                this.showToast(result.error || 'Failed to update settings', 'error');
             }
-            
         } catch (error) {
-            console.error('Update settings error:', error);
+            console.error('Error updating settings:', error);
             this.showToast('Failed to update settings', 'error');
+        } finally {
+            this.showLoading(false);
         }
     }
     
     async buyToken(mint) {
         if (!this.walletConnected) {
-            this.showToast('Wallet not connected', 'error');
+            this.showToast('Please connect your wallet first', 'warning');
             return;
         }
         
         this.showLoading(true);
         
         try {
-            const response = await fetch('/api/buy_token', {
+            const response = await fetch('/api/trade/buy', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ mint: mint })
+                body: JSON.stringify({
+                    mint: mint,
+                    amount: parseFloat(document.getElementById('solAmount').value)
+                })
             });
             
             const result = await response.json();
             
             if (result.success) {
-                this.showToast('Buy order executed!', 'success');
+                this.showToast('Buy order executed successfully!', 'success');
+                this.addLog(`Buy order executed for ${mint.slice(0, 8)}...`, 'success');
             } else {
-                this.showToast(`Buy failed: ${result.error}`, 'error');
+                this.showToast(result.error || 'Buy order failed', 'error');
             }
-            
         } catch (error) {
-            console.error('Buy token error:', error);
+            console.error('Error buying token:', error);
             this.showToast('Buy order failed', 'error');
+        } finally {
+            this.showLoading(false);
         }
-        
-        this.showLoading(false);
     }
     
     async sellPosition(mint) {
         if (!this.walletConnected) {
-            this.showToast('Wallet not connected', 'error');
+            this.showToast('Please connect your wallet first', 'warning');
             return;
         }
         
         this.showLoading(true);
         
         try {
-            const response = await fetch('/api/sell_position', {
+            const response = await fetch('/api/trade/sell', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ mint: mint })
+                body: JSON.stringify({
+                    mint: mint
+                })
             });
             
             const result = await response.json();
             
             if (result.success) {
-                this.showToast('Sell order executed!', 'success');
+                this.showToast('Sell order executed successfully!', 'success');
+                this.addLog(`Sell order executed for ${mint.slice(0, 8)}...`, 'success');
             } else {
-                this.showToast(`Sell failed: ${result.error}`, 'error');
+                this.showToast(result.error || 'Sell order failed', 'error');
             }
-            
         } catch (error) {
-            console.error('Sell position error:', error);
+            console.error('Error selling position:', error);
             this.showToast('Sell order failed', 'error');
+        } finally {
+            this.showLoading(false);
         }
-        
-        this.showLoading(false);
     }
     
     handleNewToken(token) {
@@ -739,55 +644,57 @@ class SniperBotApp {
         document.getElementById('updateSettingsBtn').disabled = !isValid;
     }
     
-    async loadInitialData() {
-        try {
-            const response = await fetch('/api/get_status');
-            const status = await response.json();
-            
-            if (status.success && status.wallet_connected) {
-                this.walletConnected = true;
-                document.getElementById('walletAddress').textContent = this.truncateAddress(status.wallet_address);
-                document.getElementById('walletBalance').textContent = status.sol_balance.toFixed(4);
-                document.getElementById('statusText').textContent = 'Wallet Connected';
-                document.getElementById('walletInfo').style.display = 'block';
-                document.getElementById('walletForm').style.display = 'none';
-                document.getElementById('startBtn').disabled = false;
-            } else {
-                // Show wallet form if not connected
-                document.getElementById('walletInfo').style.display = 'none';
-                document.getElementById('walletForm').style.display = 'block';
-            }
-            
-            if (status.success && status.is_monitoring) {
-                this.botRunning = true;
-                document.getElementById('statusText').textContent = 'Bot Running';
-                document.getElementById('startBtn').disabled = true;
-                document.getElementById('stopBtn').disabled = false;
-            }
-            
-            // Load settings if available
-            if (status.success && status.settings) {
-                const settings = status.settings;
-                document.getElementById('solAmount').value = settings.sol_amount_per_snipe;
-                document.getElementById('maxPositions').value = settings.max_concurrent_positions;
-                document.getElementById('profitTarget').value = settings.profit_target_percent;
-                document.getElementById('stopLoss').value = settings.stop_loss_percent;
-                document.getElementById('autoBuy').checked = settings.auto_buy_enabled;
-                document.getElementById('autoSell').checked = settings.auto_sell_enabled;
-                document.getElementById('minMarketCap').value = settings.min_market_cap;
-                document.getElementById('maxMarketCap').value = settings.max_market_cap;
-            }
-            
-            // Load positions
-            if (status.success && status.positions) {
-                this.positions = status.positions;
-                this.updatePositionsTable();
-                this.updateTotalPnL();
-            }
-            
-        } catch (error) {
-            console.error('Failed to load initial data:', error);
+    loadInitialData() {
+        // Load bot status from backend
+        fetch('/api/status')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    this.updateUIFromStatus(data.data);
+                } else {
+                    this.addLog('Failed to load bot status', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error loading initial data:', error);
+                this.addLog('Failed to connect to backend', 'error');
+            });
+    }
+    
+    updateUIFromStatus(status) {
+        // Update wallet info
+        if (status.wallet_connected) {
+            document.getElementById('walletForm').style.display = 'none';
+            document.getElementById('walletInfo').style.display = 'block';
+            document.getElementById('walletAddress').textContent = status.wallet_address;
+            document.getElementById('walletBalance').textContent = `${status.sol_balance.toFixed(3)} SOL`;
+            document.getElementById('solBalance').textContent = status.sol_balance.toFixed(3);
+            this.walletConnected = true;
+        } else {
+            document.getElementById('walletForm').style.display = 'block';
+            document.getElementById('walletInfo').style.display = 'none';
+            this.walletConnected = false;
         }
+        
+        // Update bot status
+        this.botRunning = status.is_running;
+        this.updateBotControls();
+        
+        // Update settings
+        if (status.settings) {
+            document.getElementById('solAmount').value = status.settings.sol_per_snipe;
+            document.getElementById('maxPositions').value = status.settings.max_positions;
+            document.getElementById('profitTarget').value = status.settings.profit_target_percent;
+            document.getElementById('stopLoss').value = status.settings.stop_loss_percent;
+            document.getElementById('minMarketCap').value = status.settings.min_market_cap;
+            document.getElementById('maxMarketCap').value = status.settings.max_market_cap;
+            document.getElementById('autoBuy').checked = status.settings.auto_buy;
+            document.getElementById('autoSell').checked = status.settings.auto_sell;
+        }
+        
+        // Update header stats
+        document.getElementById('totalPnl').textContent = `${status.total_pnl >= 0 ? '+' : ''}${status.total_pnl.toFixed(4)} SOL`;
+        document.getElementById('activePositions').textContent = status.active_positions;
     }
     
     startUIUpdates() {
@@ -892,6 +799,30 @@ class SniperBotApp {
         this.logs = [];
         this.updateLogsTable();
         this.showToast('Logs table cleared', 'success');
+    }
+
+    updateBotControls() {
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusText = document.getElementById('statusText');
+        const statusDot = document.getElementById('statusDot');
+        
+        if (this.botRunning) {
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            statusText.textContent = 'Monitoring';
+            statusDot.className = 'status-dot monitoring';
+        } else if (this.walletConnected) {
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            statusText.textContent = 'Ready';
+            statusDot.className = 'status-dot ready';
+        } else {
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+            statusText.textContent = 'Connect Wallet';
+            statusDot.className = 'status-dot stopped';
+        }
     }
 }
 

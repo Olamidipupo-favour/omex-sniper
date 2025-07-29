@@ -1,13 +1,16 @@
 import asyncio
 import websockets
+import websocket  # Add synchronous websocket
 import json
 import logging
 import ssl
 import aiohttp
+import threading
+import time
 from datetime import datetime
 from typing import Dict, Any, Callable, Optional
 from dataclasses import dataclass
-from config import Config
+from config import PUMPPORTAL_WS_URL, PUMPPORTAL_API_URL
 
 logger = logging.getLogger(__name__)
 
@@ -99,39 +102,72 @@ class PumpPortalMonitor:
         """Set callback function for trade notifications"""
         self.trade_callback = callback
     
-    async def connect_websocket(self):
+    async def connect_websocket(self) -> bool:
         """Connect to PumpPortal WebSocket"""
         try:
-            logger.info("🔌 Connecting to PumpPortal WebSocket...")
-            self.websocket = await websockets.connect(
-                Config.PUMPPORTAL_WS_URL,
-                ssl=ssl_context,
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=10
-            )
-            logger.info("✅ Connected to PumpPortal WebSocket")
-            self.connection_attempts = 0
-            return True
-        except Exception as e:
             self.connection_attempts += 1
-            logger.error(f"❌ WebSocket connection failed (attempt {self.connection_attempts}): {e}")
+            logger.info(f"🔌 Connecting to PumpPortal WebSocket (attempt {self.connection_attempts})...")
+            logger.info(f"📡 WebSocket URL: {PUMPPORTAL_WS_URL}")
+            
+            # Add step-by-step logging
+            logger.info("🔧 Step 1: Creating SSL context...")
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            logger.info("✅ Step 1 complete")
+            
+            logger.info("🔧 Step 2: Attempting WebSocket connection...")
+            # Add timeout to prevent hanging
+            try:
+                logger.info(f"🔧 Step 2: Attempting WebSocket connection to {PUMPPORTAL_WS_URL}...")
+                self.websocket = await asyncio.wait_for(
+                    websockets.connect(
+                        PUMPPORTAL_WS_URL,
+                        ssl=ssl_ctx,
+                        ping_interval=20,
+                        ping_timeout=10,
+                        close_timeout=10
+                    ),
+                    timeout=15  # 15 second timeout
+                )
+                logger.info(f"🔧 Step 2: WebSocket connected to {PUMPPORTAL_WS_URL}")
+                logger.info("✅ Step 2 complete - WebSocket connected!")
+            except asyncio.TimeoutError:
+                logger.error("❌ Step 2 TIMEOUT - WebSocket connection timed out after 15 seconds")
+                raise
+            
+            logger.info("🔧 Step 3: Testing connection with ping...")
+            await self.websocket.ping()
+            logger.info("✅ Step 3 complete - Ping successful!")
+            
+            logger.info("✅ Connected to PumpPortal WebSocket successfully")
+            self.connection_attempts = 0  # Reset on successful connection
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to WebSocket: {e}")
+            logger.error(f"   Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            self.websocket = None
             return False
     
     async def subscribe_new_tokens(self):
         """Subscribe to new token creation events"""
         if not self.websocket:
+            logger.warning("❌ Cannot subscribe - WebSocket not connected")
             return False
             
         try:
             subscription = {
                 "method": "subscribeNewToken"
             }
+            logger.info(f"📤 Sending subscription: {subscription}")
             await self.websocket.send(json.dumps(subscription))
-            logger.info("🎯 Subscribed to new token events")
+            logger.info("🎯 Subscribed to new token events successfully")
             return True
         except Exception as e:
-            logger.error(f"Failed to subscribe to new tokens: {e}")
+            logger.error(f"❌ Failed to subscribe to new tokens: {e}")
             return False
     
     async def subscribe_token_trades(self, token_mints: list):
@@ -168,12 +204,56 @@ class PumpPortalMonitor:
             logger.error(f"Failed to subscribe to account trades: {e}")
             return False
     
+    async def subscribe_all_trades(self):
+        """Subscribe to all trading activity"""
+        if not self.websocket:
+            logger.warning("❌ Cannot subscribe - WebSocket not connected")
+            return False
+            
+        try:
+            # First subscribe to new tokens
+            subscription = {
+                "method": "subscribeNewToken"
+            }
+            logger.info(f"📤 Sending new token subscription: {subscription}")
+            await self.websocket.send(json.dumps(subscription))
+            logger.info("✅ New token subscription sent successfully")
+            
+            # Wait a moment before next subscription
+            await asyncio.sleep(0.5)
+            
+            # Also subscribe to all trades to get real-time activity
+            trade_subscription = {
+                "method": "subscribeAccountTrade",
+                "keys": ["all"]
+            }
+            logger.info(f"📤 Sending all trades subscription: {trade_subscription}")
+            await self.websocket.send(json.dumps(trade_subscription))
+            logger.info("✅ All trades subscription sent successfully")
+            
+            logger.info("🎯 All subscriptions sent - waiting for confirmations...")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to send subscriptions: {e}")
+            logger.error(f"   Exception type: {type(e).__name__}")
+            return False
+    
     async def parse_token_data(self, data: Dict[str, Any]) -> TokenInfo:
         """Parse new token data from WebSocket"""
         # Extract the correct fields based on actual data structure
         sol_amount = data.get("solAmount", 0.0)  # This is the SOL in the initial transaction
-        v_sol_in_bonding_curve = data.get("vSolInBondingCurve", 0.0)  # Total SOL in bonding curve
-        v_tokens_in_bonding_curve = data.get("vTokensInBondingCurve", 0.0)  # Total tokens in bonding curve
+        
+        # Handle different field variations in the data
+        if "vSolInBondingCurve" in data:
+            # New format with bonding curve data
+            v_sol_in_bonding_curve = data.get("vSolInBondingCurve", 0.0)
+            v_tokens_in_bonding_curve = data.get("vTokensInBondingCurve", 0.0)
+        else:
+            # Old format with pool data
+            v_sol_in_bonding_curve = data.get("solInPool", 0.0)
+            v_tokens_in_bonding_curve = data.get("tokensInPool", 0.0)
+            
         initial_buy_tokens = data.get("initialBuy", 0.0)  # Initial buy amount in tokens
         market_cap_sol = data.get("marketCapSol", 0.0)  # Market cap in SOL
         
@@ -252,100 +332,240 @@ class PumpPortalMonitor:
     async def handle_message(self, message: str):
         """Handle incoming WebSocket messages"""
         try:
+            # LOG EVERY SINGLE MESSAGE RECEIVED
+            logger.info(f"📥 RAW MESSAGE: {message}")
+            
             data = json.loads(message)
+            logger.info(f"📊 PARSED DATA: {data}")
             
-            # Debug: Log the raw data structure
-            logger.info(f"Raw WebSocket data: {json.dumps(data, indent=2)}")
-            
-            # Only process tokens from "pump" pool
-            pool = data.get("pool", "")
-            if pool != "pump":
-                logger.info(f"⏭️  Skipping token from '{pool}' pool (only processing 'pump' pool)")
+            # Only process pool == 'pump'
+            if data.get("pool") != "pump":
+                logger.info(f"⏭️ SKIPPING - Not a pump pool (pool: {data.get('pool')})")
                 return
             
-            # Check if this is a new token event
-            if "mint" in data and data.get("mint") not in self.known_tokens:
-                # This looks like a new token
+            # Handle subscription confirmation messages
+            if 'message' in data and 'subscribed' in data['message'].lower():
+                logger.info(f"✅ Subscription confirmed: {data['message']}")
+                return
+            
+            # Log all data keys to see what we're getting
+            logger.info(f"🔍 MESSAGE KEYS: {list(data.keys())}")
+            
+            # Check if this looks like token data (has the key fields we expect)
+            required_fields = ['mint', 'symbol', 'name']
+            missing_fields = [field for field in required_fields if field not in data]
+            
+            if missing_fields:
+                logger.info(f"⏭️ SKIPPING - Missing fields: {missing_fields}")
+                logger.info(f"📊 Available keys: {list(data.keys())}")
+                return
+            
+            # Check for txType = 'create' to ensure it's a new token creation
+            if data.get('txType') != 'create':
+                logger.info(f"⏭️ SKIPPING - Not a token creation (txType: {data.get('txType')})")
+                return
+            
+            # Check if we've already processed this token
+            mint = data.get("mint", "")
+            if mint in self.known_tokens:
+                logger.info(f"⏭️ Already processed token: {mint}")
+                return
+            
+            # Process as new token
+            logger.info(f"🆕 PROCESSING NEW TOKEN: {data.get('symbol', 'Unknown')} ({data.get('name', 'Unknown')})")
+            logger.info(f"📊 Mint: {mint}")
+            
+            try:
                 token = await self.parse_token_data(data)
                 self.known_tokens.add(token.mint)
                 
-                logger.info(f"🚀 NEW TOKEN (pump pool): {token.symbol} ({token.name}) - {token.mint}")
-                logger.info(f"   Market Cap: ${token.market_cap:,.0f} | Price: ${token.price:.8f}")
+                logger.info(f"🚀 NEW TOKEN PARSED: {token.symbol} ({token.name})")
+                logger.info(f"   Mint: {token.mint}")
+                logger.info(f"   Market Cap: ${token.market_cap:,.0f}")
+                logger.info(f"   Price: ${token.price:.8f}")
                 
                 if self.new_token_callback:
+                    logger.info("📡 Calling new token callback...")
                     if asyncio.iscoroutinefunction(self.new_token_callback):
                         await self.new_token_callback(token)
                     else:
                         self.new_token_callback(token)
-            
-            # Check if this is a trade event
-            elif "signature" in data and "trader" in data:
-                trade = self.parse_trade_data(data)
-                
-                trade_type = "BUY" if trade.is_buy else "SELL"
-                logger.info(f"💰 {trade_type}: {trade.amount:.4f} SOL on {trade.mint[:8]}...")
-                
-                if self.trade_callback:
-                    if asyncio.iscoroutinefunction(self.trade_callback):
-                        await self.trade_callback(trade)
-                    else:
-                        self.trade_callback(trade)
+                    logger.info("✅ Token callback completed")
+                else:
+                    logger.warning("⚠️ No new token callback set!")
                         
-        except json.JSONDecodeError:
-            logger.warning(f"Invalid JSON received: {message[:100]}...")
+            except Exception as e:
+                logger.error(f"❌ Error parsing token data: {e}")
+                logger.error(f"   Data: {data}")
+                import traceback
+                logger.error(f"   Traceback: {traceback.format_exc()}")
+                        
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ JSON DECODE ERROR: {e}")
+            logger.error(f"   Raw message: {message[:200]}...")
         except Exception as e:
-            logger.error(f"Error handling message: {e}")
-            logger.error(f"Message that caused error: {message[:200]}...")
+            logger.error(f"❌ GENERAL ERROR handling message: {e}")
+            logger.error(f"   Message: {message[:200]}...")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+    
+    def _process_token_sync(self, data: Dict[str, Any]):
+        """Process token data synchronously"""
+        try:
+            # Only process pool == 'pump'
+            if data.get("pool") != "pump":
+                logger.info(f"⏭️ SKIPPING - Not a pump pool (pool: {data.get('pool')})")
+                return
+            # Extract fields like in parse_token_data but synchronously
+            sol_amount = data.get("solAmount", 0.0)
+            
+            # Handle different field variations
+            if "vSolInBondingCurve" in data:
+                v_sol_in_bonding_curve = data.get("vSolInBondingCurve", 0.0)
+                v_tokens_in_bonding_curve = data.get("vTokensInBondingCurve", 0.0)
+            else:
+                v_sol_in_bonding_curve = data.get("solInPool", 0.0)
+                v_tokens_in_bonding_curve = data.get("tokensInPool", 0.0)
+                
+            initial_buy_tokens = data.get("initialBuy", 0.0)
+            market_cap_sol = data.get("marketCapSol", 0.0)
+            
+            # Calculate price and market cap (use cached SOL price)
+            price_per_token = v_sol_in_bonding_curve / v_tokens_in_bonding_curve if v_tokens_in_bonding_curve > 0 else 0.0
+            market_cap_usd = market_cap_sol * self.sol_price_usd
+            price_usd = price_per_token * self.sol_price_usd
+            
+            # Create TokenInfo object
+            token_info = TokenInfo(
+                mint=data.get("mint", ""),
+                name=data.get("name", ""),
+                symbol=data.get("symbol", ""),
+                description="",
+                image=data.get("uri", ""),
+                created_timestamp=int(datetime.now().timestamp()),
+                usd_market_cap=market_cap_usd,
+                market_cap=market_cap_usd,
+                price=price_usd,
+                creator=data.get("traderPublicKey", ""),
+                twitter="",
+                telegram="",
+                website="",
+                nsfw=False,
+                sol_in_pool=v_sol_in_bonding_curve,
+                tokens_in_pool=v_tokens_in_bonding_curve,
+                initial_buy=initial_buy_tokens,
+                sol_amount=sol_amount,
+                new_token_balance=0.0,
+                trader_public_key=data.get("traderPublicKey", ""),
+                tx_type=data.get("txType", ""),
+                signature=data.get("signature", ""),
+                pool=data.get("pool", "")
+            )
+            
+            # Add to known tokens
+            self.known_tokens.add(token_info.mint)
+            
+            logger.info(f"🚀 NEW TOKEN PARSED: {token_info.symbol} ({token_info.name})")
+            logger.info(f"   Market Cap: ${token_info.market_cap:,.0f}")
+            logger.info(f"   Price: ${token_info.price:.8f}")
+            
+            # Call callback
+            if self.new_token_callback:
+                logger.info("📡 Calling new token callback...")
+                if asyncio.iscoroutinefunction(self.new_token_callback):
+                    # For async callbacks, we need to schedule them in the event loop
+                    try:
+                        loop = asyncio.get_event_loop()
+                        asyncio.run_coroutine_threadsafe(self.new_token_callback(token_info), loop)
+                    except:
+                        # If no loop available, call synchronously
+                        asyncio.run(self.new_token_callback(token_info))
+                else:
+                    self.new_token_callback(token_info)
+                logger.info("✅ Token callback completed")
+            else:
+                logger.warning("⚠️ No new token callback set!")
+                
+        except Exception as e:
+            logger.error(f"❌ Error processing token: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
     
     async def start_monitoring(self):
         """Start monitoring for new tokens and trades"""
         self.monitoring = True
         logger.info("🎯 Starting PumpPortal monitoring...")
         
-        while self.monitoring:
+        # Use synchronous WebSocket in a thread since async hangs
+        def on_message(ws, message):
             try:
-                # Connect if not connected
-                if not self.websocket or self._is_websocket_closed():
-                    if not await self.connect_websocket():
-                        if self.connection_attempts >= self.max_connection_attempts:
-                            logger.error("❌ Max connection attempts reached. Stopping monitoring.")
-                            break
-                        await asyncio.sleep(5)
-                        continue
+                logger.info(f"📥 RAW MESSAGE: {message}")
+                data = json.loads(message)
                 
-                # Subscribe to new tokens
-                if not await self.subscribe_new_tokens():
-                    await asyncio.sleep(5)
-                    continue
+                # Handle subscription confirmation
+                if 'message' in data and 'subscribed' in data['message'].lower():
+                    logger.info(f"✅ Subscription confirmed: {data['message']}")
+                    return
                 
-                # Listen for messages with proper cleanup
-                try:
-                    async for message in self.websocket:
-                        if not self.monitoring:
-                            break
-                        await self.handle_message(message)
-                except asyncio.CancelledError:
-                    logger.info("Message listening cancelled")
-                    break
-                except Exception as e:
-                    logger.error(f"Error in message loop: {e}")
-                    await asyncio.sleep(2)
-                        
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("⚠️ WebSocket connection closed. Reconnecting...")
-                self.websocket = None
-                await asyncio.sleep(2)
+                # Check for token data
+                required_fields = ['mint', 'symbol', 'name']
+                if not all(field in data for field in required_fields):
+                    return
                 
-            except asyncio.CancelledError:
-                logger.info("Monitoring loop cancelled")
-                break
+                # Check for token creation
+                if data.get('txType') != 'create':
+                    return
+                
+                # Check if already processed
+                mint = data.get("mint", "")
+                if mint in self.known_tokens:
+                    return
+                
+                logger.info(f"🆕 PROCESSING NEW TOKEN: {data.get('symbol')} ({data.get('name')})")
+                
+                # Parse token data synchronously
+                self._process_token_sync(data)
                 
             except Exception as e:
-                logger.error(f"Error in monitoring loop: {e}")
-                await asyncio.sleep(5)
+                logger.error(f"❌ Error handling message: {e}")
         
-        # Ensure proper cleanup
-        await self.close_connection()
+        def on_error(ws, error):
+            logger.error(f"❌ WebSocket error: {error}")
+        
+        def on_close(ws, close_status_code, close_msg):
+            logger.info("🔌 WebSocket closed")
+        
+        def on_open(ws):
+            logger.info("✅ WebSocket opened successfully!")
+            # Send subscription
+            subscription = {"method": "subscribeNewToken"}
+            logger.info(f"📤 Sending subscription: {subscription}")
+            ws.send(json.dumps(subscription))
+            logger.info("✅ Subscription sent successfully")
+        
+        # Create and run WebSocket in thread
+        def run_websocket():
+            logger.info("🚀 Starting synchronous WebSocket...")
+            ws = websocket.WebSocketApp(
+                PUMPPORTAL_WS_URL,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close
+            )
+            ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+        
+        # Start WebSocket in background thread
+        ws_thread = threading.Thread(target=run_websocket)
+        ws_thread.daemon = True
+        ws_thread.start()
+        
+        logger.info("✅ Monitoring system started with synchronous WebSocket")
+        
+        # Keep the async function alive
+        while self.monitoring:
+            await asyncio.sleep(1)
+            
         logger.info("⏹ Stopped PumpPortal monitoring")
     
     def _is_websocket_closed(self):

@@ -1,317 +1,364 @@
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 import asyncio
 import threading
-import json
 import logging
-from datetime import datetime
-from config import Config
-from sniper_bot import SniperBot, Position
-from pump_fun_monitor import TokenInfo
+from typing import Dict, Any
 
+from config import config_manager
+from sniper_bot import SniperBot
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'pump-fun-sniper-bot-secret'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+app.config['SECRET_KEY'] = 'pump-fun-sniper-secret-key'
+
+# Initialize SocketIO with fallback for Python 3.13 compatibility
+try:
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+except Exception as e:
+    logger.warning(f"Failed to initialize SocketIO with threading mode: {e}")
+    try:
+        socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+    except Exception as e2:
+        logger.warning(f"Failed to initialize SocketIO with gevent mode: {e2}")
+        # Fallback to basic mode
+        socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Global bot instance
 bot = SniperBot()
 bot_thread = None
-is_monitoring = False
+loop = None
 
 class WebSocketHandler:
+    """Handle WebSocket communications"""
+    
     @staticmethod
-    def emit_new_token(token: TokenInfo):
+    def emit_new_token(token_data: Dict[str, Any]):
+        """Emit new token event to frontend"""
         socketio.emit('new_token', {
-            'mint': token.mint,
-            'symbol': token.symbol,
-            'name': token.name,
-            'market_cap': token.market_cap,
-            'price': token.price,
-            'created_timestamp': token.created_timestamp,
-            'nsfw': token.nsfw,
-            'description': token.description,
-            'image': token.image,
-            'creator': token.creator,
-            'twitter': token.twitter,
-            'telegram': token.telegram,
-            'website': token.website,
-            'usd_market_cap': token.usd_market_cap,
-            # PumpPortal pool data fields
-            'sol_in_pool': token.sol_in_pool,
-            'tokens_in_pool': token.tokens_in_pool,
-            'initial_buy': token.initial_buy,
-            'sol_amount': token.sol_amount,
-            'new_token_balance': token.new_token_balance,
-            'trader_public_key': token.trader_public_key,
-            'tx_type': token.tx_type,
-            'signature': token.signature,
-            'pool': token.pool
+            'mint': token_data.get('mint'),
+            'symbol': token_data.get('symbol'),
+            'name': token_data.get('name'),
+            'market_cap': token_data.get('market_cap'),
+            'price': token_data.get('price'),
+            'sol_in_pool': token_data.get('sol_in_pool'),
+            'tokens_in_pool': token_data.get('tokens_in_pool'),
+            'initial_buy': token_data.get('initial_buy'),
+            'created_timestamp': token_data.get('created_timestamp'),
         })
     
     @staticmethod
-    def emit_position_update(position: Position):
-        socketio.emit('position_update', {
-            'token_mint': position.token_mint,
-            'token_symbol': position.token_symbol,
-            'token_name': position.token_name,
-            'entry_price': position.entry_price,
-            'current_price': position.current_price,
-            'sol_amount': position.sol_amount,
-            'current_pnl': position.current_pnl,
-            'current_pnl_percent': position.current_pnl_percent,
-            'is_active': position.is_active,
-            'entry_time': position.entry_time.isoformat(),
-            'transaction_hash': position.transaction_hash
-        })
+    def emit_position_update(position_data: Dict[str, Any]):
+        """Emit position update to frontend"""
+        socketio.emit('position_update', position_data)
     
     @staticmethod
-    def emit_transaction(transaction_data):
+    def emit_transaction(transaction_data: Dict[str, Any]):
+        """Emit transaction event to frontend"""
         socketio.emit('transaction', transaction_data)
     
     @staticmethod
-    def emit_error(error_msg):
-        socketio.emit('error', {'message': error_msg})
+    def emit_error(error_message: str):
+        """Emit error event to frontend"""
+        socketio.emit('error', {'message': error_message})
 
-# Set up bot callbacks
-bot.add_callback('new_token', WebSocketHandler.emit_new_token)
-bot.add_callback('position_update', WebSocketHandler.emit_position_update)
-bot.add_callback('transaction', WebSocketHandler.emit_transaction)
-bot.add_callback('error', WebSocketHandler.emit_error)
+# Set bot UI callback
+def handle_bot_event(event_type: str, data: Dict[str, Any]):
+    """Handle bot events for WebSocket emission"""
+    if event_type == 'new_token':
+        WebSocketHandler.emit_new_token(data)
+    elif event_type == 'position_update':
+        WebSocketHandler.emit_position_update(data)
+    elif event_type == 'transaction':
+        WebSocketHandler.emit_transaction(data)
+    elif event_type == 'error':
+        WebSocketHandler.emit_error(data)
 
+bot.set_ui_callback(handle_bot_event)
+
+# Routes
 @app.route('/')
 def index():
+    """Serve the main page"""
     return render_template('index.html')
 
-@app.route('/static/<path:filename>')
-def static_files(filename):
-    return send_from_directory('static', filename)
+@app.route('/api/status', methods=['GET'])
+def get_status():
+    """Get current bot status"""
+    try:
+        status = bot.get_bot_status()
+        return jsonify({
+            'success': True,
+            'data': status
+        })
+    except Exception as e:
+        logger.error(f"Error getting status: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
-@app.route('/api/connect_wallet', methods=['POST'])
+@app.route('/api/wallet/connect', methods=['POST'])
 def connect_wallet():
+    """Connect wallet with private key"""
     try:
         data = request.get_json()
-        private_key = data.get('private_key', '').strip()
+        private_key = data.get('private_key')
         
         if not private_key:
-            return jsonify({'success': False, 'error': 'Private key is required'})
+            return jsonify({
+                'success': False,
+                'error': 'Private key is required'
+            }), 400
         
-        if bot.set_wallet(private_key):
-            wallet_address = bot.get_wallet_address()
-            sol_balance = bot.get_sol_balance()
-            
+        success, message = bot.connect_wallet_from_key(private_key)
+        
+        if success:
+            status = bot.get_bot_status()
             return jsonify({
                 'success': True,
-                'wallet_address': wallet_address,
-                'sol_balance': sol_balance
+                'message': message,
+                'wallet_address': status['wallet_address'],
+                'sol_balance': status['sol_balance']
             })
         else:
-            return jsonify({'success': False, 'error': 'Invalid private key format'})
+            return jsonify({
+                'success': False,
+                'error': message
+            }), 400
             
     except Exception as e:
         logger.error(f"Error connecting wallet: {e}")
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({
+            'success': False,
+            'error': f'Connection failed: {str(e)}'
+        }), 500
 
-@app.route('/api/update_settings', methods=['POST'])
+@app.route('/api/wallet/disconnect', methods=['POST'])
+def disconnect_wallet():
+    """Disconnect wallet and clear private key"""
+    try:
+        # Stop monitoring if running
+        if config_manager.config.bot_state.is_running:
+            bot.stop_monitoring()
+        
+        # Clear wallet data
+        config_manager.clear_private_key()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Wallet disconnected successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error disconnecting wallet: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/settings/update', methods=['POST'])
 def update_settings():
+    """Update bot settings"""
     try:
         data = request.get_json()
         
-        bot.settings.sol_amount_per_snipe = float(data.get('sol_amount', Config.DEFAULT_SOL_AMOUNT))
-        bot.settings.max_concurrent_positions = int(data.get('max_positions', Config.DEFAULT_MAX_TOKENS))
-        bot.settings.profit_target_percent = float(data.get('profit_target', Config.DEFAULT_PROFIT_PERCENT))
-        bot.settings.stop_loss_percent = float(data.get('stop_loss', Config.DEFAULT_STOP_LOSS_PERCENT))
-        bot.settings.auto_buy_enabled = bool(data.get('auto_buy', False))
-        bot.settings.auto_sell_enabled = bool(data.get('auto_sell', True))
-        bot.settings.min_market_cap = float(data.get('min_market_cap', 1000))
-        bot.settings.max_market_cap = float(data.get('max_market_cap', 1000000000000))
+        # Validate settings
+        valid_settings = {
+            'sol_per_snipe': float,
+            'max_positions': int,
+            'profit_target_percent': float,
+            'stop_loss_percent': float,
+            'min_market_cap': float,
+            'max_market_cap': float,
+            'auto_buy': bool,
+            'auto_sell': bool
+        }
         
-        return jsonify({'success': True})
+        settings = {}
+        for key, value in data.items():
+            if key in valid_settings:
+                settings[key] = valid_settings[key](value)
         
+        success = bot.update_settings(settings)
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'Settings updated successfully'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to update settings'
+            }), 500
+            
     except Exception as e:
         logger.error(f"Error updating settings: {e}")
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
-@app.route('/api/start_monitoring', methods=['POST'])
+@app.route('/api/bot/start', methods=['POST'])
 def start_monitoring():
-    global bot_thread, is_monitoring
+    """Start bot monitoring"""
+    global bot_thread, loop
     
     try:
-        if not bot.wallet_keypair:
-            return jsonify({'success': False, 'error': 'Please connect wallet first'})
-        
-        if is_monitoring:
-            return jsonify({'success': False, 'error': 'Already monitoring'})
+        if config_manager.config.bot_state.is_running:
+            return jsonify({
+                'success': False,
+                'error': 'Bot is already running'
+            }), 400
         
         def run_bot():
-            global is_monitoring
-            is_monitoring = True
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            global loop
             try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
                 loop.run_until_complete(bot.start_monitoring())
             except Exception as e:
-                logger.error(f"Error in bot monitoring: {e}")
+                logger.error(f"Error in bot thread: {e}")
             finally:
-                is_monitoring = False
-                try:
+                if loop and not loop.is_closed():
                     loop.close()
-                except:
-                    pass
         
         bot_thread = threading.Thread(target=run_bot)
         bot_thread.daemon = True
         bot_thread.start()
         
-        return jsonify({'success': True})
-        
-    except Exception as e:
-        logger.error(f"Error starting monitoring: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/api/stop_monitoring', methods=['POST'])
-def stop_monitoring():
-    global is_monitoring
-    
-    try:
-        # Simply set the flag to stop monitoring
-        bot.stop_monitoring()
-        is_monitoring = False
-        
-        # Give the monitoring thread time to clean up
-        if bot_thread and bot_thread.is_alive():
-            bot_thread.join(timeout=2.0)
-        
-        return jsonify({'success': True})
-        
-    except Exception as e:
-        logger.error(f"Error stopping monitoring: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/api/buy_token', methods=['POST'])
-def buy_token():
-    try:
-        data = request.get_json()
-        mint = data.get('mint')
-        amount_sol = data.get('amount_sol', bot.settings.sol_amount_per_snipe)
-        
-        if not mint:
-            return jsonify({'success': False, 'error': 'Token mint is required'})
-        
-        # Execute manual buy
-        async def execute_buy():
-            return await bot.manual_buy(mint, amount_sol)
-        
-        # Run the async function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(execute_buy())
-        
-        return jsonify({'success': result})
-        
-    except Exception as e:
-        logger.error(f"Error buying token: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/api/sell_position', methods=['POST'])
-def sell_position():
-    try:
-        data = request.get_json()
-        token_mint = data.get('token_mint')
-        
-        if not token_mint:
-            return jsonify({'success': False, 'error': 'Token mint is required'})
-        
-        # Find position and sell
-        position = None
-        for pos in bot.positions:
-            if pos.token_mint == token_mint and pos.is_active:
-                position = pos
-                break
-        
-        if not position:
-            return jsonify({'success': False, 'error': 'Position not found'})
-        
-        # Execute sell
-        async def execute_sell():
-            return await bot.sell_token(position, "manual")
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(execute_sell())
-        
-        return jsonify({'success': result})
-        
-    except Exception as e:
-        logger.error(f"Error selling position: {e}")
-        return jsonify({'success': False, 'error': str(e)})
-
-@app.route('/api/get_status', methods=['GET'])
-def get_status():
-    try:
-        wallet_address = bot.get_wallet_address() if bot.wallet_keypair else ""
-        sol_balance = bot.get_sol_balance() if bot.wallet_keypair else 0.0
-        pnl_data = bot.get_total_pnl()
-        
-        positions = []
-        for pos in bot.positions:
-            positions.append({
-                'token_mint': pos.token_mint,
-                'token_symbol': pos.token_symbol,
-                'token_name': pos.token_name,
-                'entry_price': pos.entry_price,
-                'current_price': pos.current_price,
-                'sol_amount': pos.sol_amount,
-                'token_amount': pos.token_amount,
-                'current_pnl': pos.current_pnl,
-                'current_pnl_percent': pos.current_pnl_percent,
-                'is_active': pos.is_active,
-                'entry_time': pos.entry_time.isoformat(),
-                'transaction_hash': pos.transaction_hash,
-                'target_profit_percent': pos.target_profit_percent,
-                'stop_loss_percent': pos.stop_loss_percent
-            })
-        
         return jsonify({
             'success': True,
-            'wallet_connected': bool(bot.wallet_keypair),
-            'wallet_address': wallet_address,
-            'sol_balance': sol_balance,
-            'is_monitoring': is_monitoring,
-            'total_pnl': pnl_data['total_pnl'],
-            'total_pnl_percent': pnl_data['total_pnl_percent'],
-            'total_invested': pnl_data['total_invested'],
-            'active_positions': pnl_data['active_positions'],
-            'positions': positions,
-            'settings': {
-                'sol_amount_per_snipe': bot.settings.sol_amount_per_snipe,
-                'max_concurrent_positions': bot.settings.max_concurrent_positions,
-                'profit_target_percent': bot.settings.profit_target_percent,
-                'stop_loss_percent': bot.settings.stop_loss_percent,
-                'auto_buy_enabled': bot.settings.auto_buy_enabled,
-                'auto_sell_enabled': bot.settings.auto_sell_enabled,
-                'min_market_cap': bot.settings.min_market_cap,
-                'max_market_cap': bot.settings.max_market_cap
-            }
+            'message': 'Bot monitoring started'
         })
         
     except Exception as e:
-        logger.error(f"Error getting status: {e}")
-        return jsonify({'success': False, 'error': str(e)})
+        logger.error(f"Error starting bot: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
+@app.route('/api/bot/stop', methods=['POST'])
+def stop_monitoring():
+    """Stop bot monitoring"""
+    global bot_thread, loop
+    
+    try:
+        success = bot.stop_monitoring()
+        
+        if bot_thread and bot_thread.is_alive():
+            bot_thread.join(timeout=5)
+        
+        return jsonify({
+            'success': success,
+            'message': 'Bot monitoring stopped' if success else 'Failed to stop bot'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error stopping bot: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trade/buy', methods=['POST'])
+def manual_buy():
+    """Execute manual buy"""
+    try:
+        data = request.get_json()
+        mint = data.get('mint')
+        amount = data.get('amount', config_manager.config.bot_settings.sol_per_snipe)
+        
+        if not mint:
+            return jsonify({
+                'success': False,
+                'error': 'Mint address is required'
+            }), 400
+        
+        # Execute buy in async context
+        async def execute_buy():
+            return await bot.buy_token(mint, amount)
+        
+        # Run in the bot's event loop if it exists
+        if loop and not loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(execute_buy(), loop)
+            success = future.result(timeout=30)
+        else:
+            success = asyncio.run(execute_buy())
+        
+        return jsonify({
+            'success': success,
+            'message': 'Buy order executed' if success else 'Buy order failed'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error executing buy: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/trade/sell', methods=['POST'])
+def manual_sell():
+    """Execute manual sell"""
+    try:
+        data = request.get_json()
+        mint = data.get('mint')
+        
+        if not mint:
+            return jsonify({
+                'success': False,
+                'error': 'Mint address is required'
+            }), 400
+        
+        # Execute sell in async context
+        async def execute_sell():
+            return await bot.sell_token(mint)
+        
+        # Run in the bot's event loop if it exists
+        if loop and not loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(execute_sell(), loop)
+            success = future.result(timeout=30)
+        else:
+            success = asyncio.run(execute_sell())
+        
+        return jsonify({
+            'success': success,
+            'message': 'Sell order executed' if success else 'Sell order failed'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error executing sell: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# WebSocket Events
 @socketio.on('connect')
 def handle_connect():
-    logger.info('Client connected')
-    emit('connected', {'message': 'Connected to Pump.Fun Sniper Bot'})
+    """Handle client connection"""
+    logger.info("Client connected")
+    
+    # Send current bot status
+    status = bot.get_bot_status()
+    emit('status_update', status)
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    logger.info('Client disconnected')
-
-def run_web_server():
-    socketio.run(app, host='0.0.0.0', port=8080, debug=False)
+    """Handle client disconnection"""
+    logger.info("Client disconnected")
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    run_web_server() 
+    logger.info("🚀 Starting Pump.Fun Sniper Bot Web Server...")
+    logger.info(f"📁 Config file: {config_manager.config_file}")
+    logger.info(f"🔗 Wallet connected: {config_manager.config.bot_state.wallet_connected}")
+    logger.info(f"⚙️ Bot running: {config_manager.config.bot_state.is_running}")
+    
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False) 

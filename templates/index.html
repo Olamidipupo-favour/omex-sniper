@@ -51,37 +51,15 @@
                         <h3><i class="fas fa-wallet"></i> Wallet Connection</h3>
                         <div class="wallet-form" id="walletForm">
                             <div class="input-group">
-                                <input type="password" id="privateKeyInput" placeholder="Enter private key (Base58 or JSON array)" class="input-field">
+                                <input type="password" id="privateKeyInput" placeholder="Enter private key (Base58)" class="input-field">
                                 <button class="btn btn-primary" id="connectWalletBtn">
                                     <i class="fas fa-link"></i> Connect
                                 </button>
-                            </div>
-                            <div class="wallet-storage-option">
-                                <label class="toggle">
-                                    <input type="checkbox" id="storePrivateKey">
-                                    <span class="slider"></span>
-                                </label>
-                                <span class="toggle-label">
-                                    <i class="fas fa-save"></i> Remember private key
-                                    <small>(stores locally on this device)</small>
-                                </span>
-                            </div>
-                            <div class="security-warning" id="securityWarning" style="display: none;">
-                                <div class="warning-content">
-                                    <i class="fas fa-exclamation-triangle"></i>
-                                    <div class="warning-text">
-                                        <strong>Security Notice:</strong>
-                                        <p>Your private key will be stored in your browser's local storage. Only enable this on trusted devices. Clear browser data or disable this option to remove the stored key.</p>
-                                    </div>
-                                </div>
                             </div>
                             <div class="wallet-info" id="walletInfo" style="display: none;">
                                 <div class="wallet-address">
                                     <span>Address:</span>
                                     <code id="walletAddress"></code>
-                                    <button class="btn btn-tiny edit-key-btn" id="editKeyBtn" title="Edit Private Key">
-                                        <i class="fas fa-edit"></i>
-                                    </button>
                                 </div>
                                 <div class="wallet-balance">
                                     <span>Balance:</span>
