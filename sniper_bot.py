@@ -207,14 +207,23 @@ class SniperBot:
             config_manager.update_bot_state(is_running=False)
             
             # Stop monitor
-            self.monitor.stop_monitoring()
+            try:
+                self.monitor.stop_monitoring()
+            except Exception as e:
+                logger.warning(f"⚠️ Error stopping monitor: {e}")
             
-            # Cancel tasks
-            if self.monitoring_task and not self.monitoring_task.done():
-                self.monitoring_task.cancel()
+            # Cancel tasks with error handling
+            try:
+                if self.monitoring_task and not self.monitoring_task.done():
+                    self.monitoring_task.cancel()
+            except Exception as e:
+                logger.warning(f"⚠️ Error canceling monitoring task: {e}")
             
-            if self.position_monitoring_task and not self.position_monitoring_task.done():
-                self.position_monitoring_task.cancel()
+            try:
+                if self.position_monitoring_task and not self.position_monitoring_task.done():
+                    self.position_monitoring_task.cancel()
+            except Exception as e:
+                logger.warning(f"⚠️ Error canceling position monitoring task: {e}")
             
             logger.info("✅ Monitoring system stopped")
             return True

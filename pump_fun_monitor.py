@@ -60,6 +60,7 @@ class TradeInfo:
 class PumpPortalMonitor:
     def __init__(self):
         self.websocket = None
+        self.ws_app = None  # Add WebSocketApp instance
         self.monitoring = False
         self.new_token_callback = None
         self.trade_callback = None
@@ -546,14 +547,14 @@ class PumpPortalMonitor:
         # Create and run WebSocket in thread
         def run_websocket():
             logger.info("🚀 Starting synchronous WebSocket...")
-            ws = websocket.WebSocketApp(
+            self.ws_app = websocket.WebSocketApp(
                 PUMPPORTAL_WS_URL,
                 on_open=on_open,
                 on_message=on_message,
                 on_error=on_error,
                 on_close=on_close
             )
-            ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+            self.ws_app.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
         
         # Start WebSocket in background thread
         ws_thread = threading.Thread(target=run_websocket)
@@ -582,23 +583,41 @@ class PumpPortalMonitor:
     
     def stop_monitoring(self):
         """Stop monitoring"""
+        logger.info("🛑 Stopping PumpPortal monitoring...")
         self.monitoring = False
         
-        # Close websocket connection synchronously if possible
+        # Close the synchronous WebSocket connection
+        if self.ws_app:
+            try:
+                logger.info("🔌 Closing WebSocket connection...")
+                self.ws_app.close()
+                logger.info("✅ WebSocket connection closed")
+            except Exception as e:
+                logger.warning(f"⚠️ Error closing WebSocket: {e}")
+            finally:
+                self.ws_app = None
+        
+        # Close websocket connection if it exists (for async version)
         if self.websocket:
             try:
                 # Try to get the current event loop
                 loop = asyncio.get_event_loop()
-                if loop.is_running():
+                if loop.is_running() and not loop.is_closed():
                     # If loop is running, schedule the close
                     asyncio.create_task(self.close_connection())
                 else:
-                    # If no loop is running, we can't close gracefully
-                    # Just set websocket to None
+                    # If no loop is running or it's closed, just set websocket to None
+                    logger.info("📡 Event loop closed, skipping graceful websocket close")
                     self.websocket = None
             except RuntimeError:
                 # No event loop, just set to None
+                logger.info("📡 No event loop available, skipping graceful websocket close")
                 self.websocket = None
+            except Exception as e:
+                logger.warning(f"⚠️ Error during websocket cleanup: {e}")
+                self.websocket = None
+        
+        logger.info("✅ PumpPortal monitoring stopped")
     
     async def close_connection(self):
         """Close WebSocket connection"""
