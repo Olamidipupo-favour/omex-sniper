@@ -3,6 +3,7 @@ import websockets
 import json
 import logging
 import ssl
+import aiohttp
 from datetime import datetime
 from typing import Dict, Any, Callable, Optional
 from dataclasses import dataclass
@@ -62,7 +63,34 @@ class PumpPortalMonitor:
         self.known_tokens = set()
         self.connection_attempts = 0
         self.max_connection_attempts = 5
+        self.sol_price_usd = 100.0  # Default fallback price
+        self.last_sol_price_update = 0
+        self.sol_price_cache_duration = 300  # 5 minutes
         
+    async def get_sol_price(self) -> float:
+        """Fetch real-time SOL price from Pump.Fun API"""
+        current_time = datetime.now().timestamp()
+        
+        # Return cached price if it's still fresh
+        if current_time - self.last_sol_price_update < self.sol_price_cache_duration:
+            return self.sol_price_usd
+        
+        try:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                async with session.get('https://frontend-api-v3.pump.fun/sol-price') as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self.sol_price_usd = data.get('solPrice', 100.0)
+                        self.last_sol_price_update = current_time
+                        logger.info(f"📈 Updated SOL price: ${self.sol_price_usd:.2f}")
+                        return self.sol_price_usd
+                    else:
+                        logger.warning(f"Failed to fetch SOL price: HTTP {response.status}")
+                        return self.sol_price_usd
+        except Exception as e:
+            logger.warning(f"Error fetching SOL price: {e}")
+            return self.sol_price_usd
+    
     def set_new_token_callback(self, callback: Callable[[TokenInfo], None]):
         """Set callback function for new token notifications"""
         self.new_token_callback = callback
@@ -140,56 +168,73 @@ class PumpPortalMonitor:
             logger.error(f"Failed to subscribe to account trades: {e}")
             return False
     
-    def parse_token_data(self, data: Dict[str, Any]) -> TokenInfo:
+    async def parse_token_data(self, data: Dict[str, Any]) -> TokenInfo:
         """Parse new token data from WebSocket"""
-        # Calculate price from pool data
-        sol_in_pool = data.get("solInPool", 0.0)
-        tokens_in_pool = data.get("tokensInPool", 0.0)
+        # Extract the correct fields based on actual data structure
+        sol_amount = data.get("solAmount", 0.0)  # This is the SOL in the initial transaction
+        v_sol_in_bonding_curve = data.get("vSolInBondingCurve", 0.0)  # Total SOL in bonding curve
+        v_tokens_in_bonding_curve = data.get("vTokensInBondingCurve", 0.0)  # Total tokens in bonding curve
+        initial_buy_tokens = data.get("initialBuy", 0.0)  # Initial buy amount in tokens
+        market_cap_sol = data.get("marketCapSol", 0.0)  # Market cap in SOL
         
-        # Price per token = SOL in pool / tokens in pool
-        price = sol_in_pool / tokens_in_pool if tokens_in_pool > 0 else 0.0
+        # Calculate price per token = SOL in bonding curve / tokens in bonding curve
+        price_per_token = v_sol_in_bonding_curve / v_tokens_in_bonding_curve if v_tokens_in_bonding_curve > 0 else 0.0
         
-        # Market cap in SOL
-        market_cap_sol = data.get("marketCapSol", 0.0)
-        
-        # Convert SOL market cap to USD (approximate, using ~$100/SOL)
-        # TODO: Get real-time SOL price from an API for more accuracy
-        sol_price_usd = 100.0  # Approximate SOL price
+        # Get real-time SOL price and convert market cap to USD
+        sol_price_usd = await self.get_sol_price()
         market_cap_usd = market_cap_sol * sol_price_usd
         
-        # Debug logging
-        logger.info(f"Token data parsed:")
-        logger.info(f"  SOL in pool: {sol_in_pool}")
-        logger.info(f"  Tokens in pool: {tokens_in_pool:,.0f}")
-        logger.info(f"  Calculated price: ${price:.8f}")
-        logger.info(f"  Market cap (SOL): {market_cap_sol:.2f}")
-        logger.info(f"  Market cap (USD): ${market_cap_usd:,.0f}")
+        # Price per token in USD
+        price_usd = price_per_token * sol_price_usd
         
-        return TokenInfo(
+        # Debug logging with corrected mappings
+        logger.info(f"Token data parsed for {data.get('symbol', 'Unknown')}:")
+        logger.info(f"  SOL amount (transaction): {sol_amount}")
+        logger.info(f"  SOL in bonding curve: {v_sol_in_bonding_curve}")
+        logger.info(f"  Tokens in bonding curve: {v_tokens_in_bonding_curve:,.0f}")
+        logger.info(f"  Initial buy (tokens): {initial_buy_tokens:,.0f}")
+        logger.info(f"  Market cap (SOL): {market_cap_sol:.4f}")
+        logger.info(f"  SOL price (USD): ${sol_price_usd:.2f}")
+        logger.info(f"  Market cap (USD): ${market_cap_usd:,.0f}")
+        logger.info(f"  Price per token (SOL): {price_per_token:.12f}")
+        logger.info(f"  Price per token (USD): ${price_usd:.12f}")
+        
+        token_info = TokenInfo(
             mint=data.get("mint", ""),
             name=data.get("name", ""),
             symbol=data.get("symbol", ""),
-            description=data.get("description", ""),
+            description="",  # Not provided in this data structure
             image=data.get("uri", ""),  # URI field contains the image/metadata link
             created_timestamp=int(datetime.now().timestamp()),  # Current time since no timestamp in data
             usd_market_cap=market_cap_usd,
             market_cap=market_cap_usd,  # Use USD market cap for display
-            price=price,
+            price=price_usd,  # Price in USD
             creator=data.get("traderPublicKey", ""),  # The trader who created the token
             twitter="",
             telegram="",
             website="",
             nsfw=False,
-            sol_in_pool=data.get("solInPool", 0.0),
-            tokens_in_pool=data.get("tokensInPool", 0.0),
-            initial_buy=data.get("initialBuy", 0.0),
-            sol_amount=data.get("solAmount", 0.0),
-            new_token_balance=data.get("newTokenBalance", 0.0),
+            # Correctly mapped fields
+            sol_in_pool=v_sol_in_bonding_curve,  # Total SOL in bonding curve
+            tokens_in_pool=v_tokens_in_bonding_curve,  # Total tokens in bonding curve
+            initial_buy=initial_buy_tokens,  # Initial buy in tokens
+            sol_amount=sol_amount,  # SOL amount from transaction
+            new_token_balance=0.0,  # Not available in this data
             trader_public_key=data.get("traderPublicKey", ""),
             tx_type=data.get("txType", ""),
             signature=data.get("signature", ""),
             pool=data.get("pool", "")
         )
+        
+        # Debug log the final TokenInfo object
+        logger.info(f"Final TokenInfo object for {token_info.symbol}:")
+        logger.info(f"  sol_in_pool: {token_info.sol_in_pool}")
+        logger.info(f"  tokens_in_pool: {token_info.tokens_in_pool}")
+        logger.info(f"  initial_buy: {token_info.initial_buy}")
+        logger.info(f"  market_cap: ${token_info.market_cap:,.0f}")
+        logger.info(f"  price: ${token_info.price:.8f}")
+        
+        return token_info
     
     def parse_trade_data(self, data: Dict[str, Any]) -> TradeInfo:
         """Parse trade data from WebSocket"""
@@ -212,13 +257,19 @@ class PumpPortalMonitor:
             # Debug: Log the raw data structure
             logger.info(f"Raw WebSocket data: {json.dumps(data, indent=2)}")
             
+            # Only process tokens from "pump" pool
+            pool = data.get("pool", "")
+            if pool != "pump":
+                logger.info(f"⏭️  Skipping token from '{pool}' pool (only processing 'pump' pool)")
+                return
+            
             # Check if this is a new token event
             if "mint" in data and data.get("mint") not in self.known_tokens:
                 # This looks like a new token
-                token = self.parse_token_data(data)
+                token = await self.parse_token_data(data)
                 self.known_tokens.add(token.mint)
                 
-                logger.info(f"🚀 NEW TOKEN: {token.symbol} ({token.name}) - {token.mint}")
+                logger.info(f"🚀 NEW TOKEN (pump pool): {token.symbol} ({token.name}) - {token.mint}")
                 logger.info(f"   Market Cap: ${token.market_cap:,.0f} | Price: ${token.price:.8f}")
                 
                 if self.new_token_callback:

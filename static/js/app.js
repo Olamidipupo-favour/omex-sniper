@@ -32,6 +32,11 @@ class SniperBotApp {
         document.getElementById('stopBtn').addEventListener('click', () => this.stopBot());
         document.getElementById('updateSettingsBtn').addEventListener('click', () => this.updateSettings());
         
+        // Clear buttons
+        document.getElementById('clearTokensBtn').addEventListener('click', () => this.clearTokens());
+        document.getElementById('clearTransactionsBtn').addEventListener('click', () => this.clearTransactions());
+        document.getElementById('clearLogsBtn').addEventListener('click', () => this.clearLogs());
+        
         // Tab switching
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', (e) => this.switchTab(e.target.dataset.tab));
@@ -418,6 +423,17 @@ class SniperBotApp {
     }
     
     handleNewToken(token) {
+        // Enhanced debug: Log the received token data structure
+        console.log('=== NEW TOKEN RECEIVED ===');
+        console.log('Full token object:', token);
+        console.log('Keys in token object:', Object.keys(token));
+        console.log('sol_in_pool value:', token.sol_in_pool, 'type:', typeof token.sol_in_pool);
+        console.log('tokens_in_pool value:', token.tokens_in_pool, 'type:', typeof token.tokens_in_pool);
+        console.log('initial_buy value:', token.initial_buy, 'type:', typeof token.initial_buy);
+        console.log('market_cap value:', token.market_cap, 'type:', typeof token.market_cap);
+        console.log('price value:', token.price, 'type:', typeof token.price);
+        console.log('===========================');
+        
         this.newTokens.unshift(token);
         if (this.newTokens.length > 50) {
             this.newTokens = this.newTokens.slice(0, 50);
@@ -475,44 +491,60 @@ class SniperBotApp {
             return;
         }
         
-        this.newTokens.forEach(token => {
+        this.newTokens.forEach((token, index) => {
+            // Debug logging for table rendering
+            if (index === 0) { // Only log for the first token to avoid spam
+                console.log('=== RENDERING TOKEN IN TABLE ===');
+                console.log('sol_in_pool for rendering:', token.sol_in_pool, '|| 0 =', token.sol_in_pool || 0);
+                console.log('tokens_in_pool for rendering:', token.tokens_in_pool);
+                console.log('tokens_in_pool / 1000000:', token.tokens_in_pool ? (token.tokens_in_pool / 1000000).toFixed(1) + 'M' : '0');
+                console.log('initial_buy for rendering:', token.initial_buy);
+                console.log('initial_buy / 1000000:', token.initial_buy ? (token.initial_buy / 1000000).toFixed(1) + 'M' : '0');
+                console.log('=================================');
+            }
+            
             const row = document.createElement('div');
             row.className = 'table-row';
             row.innerHTML = `
                 <div class="col-symbol">
                     <div class="token-info">
-                        <strong>${token.symbol}</strong>
-                        <small>${token.name}</small>
+                        <div class="token-symbol">${token.symbol}</div>
+                        <div class="token-name">${token.name || 'N/A'}</div>
                     </div>
                 </div>
-                <div class="col-name">${token.name}</div>
-                <div class="col-mint">
-                    <span class="mint-address">${token.mint}</span>
-                    <button class="btn btn-tiny copy-mint" data-mint="${token.mint}" title="Copy Mint"><i class="fas fa-copy"></i></button>
+                <div class="col-name">
+                    <span class="full-name" title="${token.name || 'N/A'}">${token.name || 'N/A'}</span>
                 </div>
-                <div class="col-market-cap">$${token.market_cap ? token.market_cap.toLocaleString() : '0'}</div>
-                <div class="col-price">$${token.price ? token.price.toFixed(8) : '0.00000000'}</div>
+                <div class="col-mint">
+                    <span class="mint-address" title="${token.mint}">${token.mint.slice(0, 8)}...${token.mint.slice(-4)}</span>
+                    <button class="btn-tiny copy-mint" data-mint="${token.mint}" title="Copy Full Mint Address">
+                        <i class="fas fa-copy"></i>
+                    </button>
+                    <a href="https://solscan.io/token/${token.mint}" target="_blank" class="solscan-link" title="View on Solscan">
+                        <i class="fas fa-external-link-alt"></i>
+                    </a>
+                </div>
+                <div class="col-market-cap">$${typeof token.market_cap === 'number' ? token.market_cap.toLocaleString() : '0'}</div>
+                <div class="col-price">$${typeof token.price === 'number' ? token.price.toFixed(8) : '0.00000000'}</div>
                 <div class="col-pool-data">
                     <div class="pool-info">
-                        <small>SOL: ${token.sol_in_pool || 0}</small>
-                        <small>Tokens: ${token.tokens_in_pool ? (token.tokens_in_pool / 1000000).toFixed(1) + 'M' : '0'}</small>
+                        <small>SOL: ${typeof token.sol_in_pool === 'number' ? token.sol_in_pool.toFixed(2) : 'N/A'}</small>
+                        <small>Tokens: ${typeof token.tokens_in_pool === 'number' ? (token.tokens_in_pool / 1000000000).toFixed(2) + 'B' : 'N/A'}</small>
                     </div>
                 </div>
                 <div class="col-initial-buy">
-                    <span class="initial-buy">${token.initial_buy ? (token.initial_buy / 1000000).toFixed(1) + 'M' : '0'}</span>
+                    <span class="initial-buy">${this.formatTokenAmount(token.initial_buy)}</span>
                 </div>
                 <div class="col-time">${this.formatTime(token.created_timestamp || token.timestamp)}</div>
                 <div class="col-links">
                     <a href="https://pump.fun/${token.mint}" target="_blank" class="pump-link" title="View on Pump.Fun">
                         <i class="fas fa-rocket"></i>
                     </a>
-                    <a href="https://solscan.io/token/${token.mint}" target="_blank" class="solscan-link" title="View on Solscan">
-                        <i class="fas fa-search"></i>
-                    </a>
                 </div>
                 <div class="col-action">
-                    <button class="btn btn-small buy-btn" data-mint="${token.mint}">
-                        <i class="fas fa-shopping-cart"></i> Buy
+                    <button class="btn buy-btn" data-mint="${token.mint}" title="Buy ${token.symbol}">
+                        <i class="fas fa-shopping-cart"></i>
+                        <span>Buy</span>
                     </button>
                 </div>
             `;
@@ -818,7 +850,48 @@ class SniperBotApp {
     }
     
     formatTime(timestamp) {
-        return new Date(timestamp).toLocaleTimeString();
+        if (!timestamp) return 'now';
+        
+        const now = Date.now();
+        const time = timestamp * 1000; // Convert from seconds to milliseconds
+        const diff = now - time;
+        
+        if (diff < 60000) return 'now';
+        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+        
+        const date = new Date(time);
+        return date.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: false 
+        });
+    }
+    
+    formatTokenAmount(amount) {
+        if (amount === null || amount === undefined) return 'N/A';
+        if (amount < 1000000) return `${(amount / 1000).toFixed(0)}K`;
+        return `${(amount / 1000000).toFixed(0)}M`;
+    }
+    
+    // Clear methods for tables
+    clearTokens() {
+        this.newTokens = [];
+        this.updateNewTokensTable();
+        this.addLog('Cleared new tokens table', 'info');
+        this.showToast('Tokens table cleared', 'success');
+    }
+    
+    clearTransactions() {
+        this.transactions = [];
+        this.updateTransactionsTable();
+        this.addLog('Cleared transactions table', 'info');
+        this.showToast('Transactions table cleared', 'success');
+    }
+    
+    clearLogs() {
+        this.logs = [];
+        this.updateLogsTable();
+        this.showToast('Logs table cleared', 'success');
     }
 }
 
