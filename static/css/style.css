@@ -618,7 +618,7 @@ input:checked + .slider:before {
 }
 
 .tokens-table .table-header {
-    grid-template-columns: 70px 120px 180px 100px 100px 140px 80px 60px 80px 90px;
+    grid-template-columns: 70px 120px 180px 100px 100px 80px 80px 140px 80px 60px 80px 90px;
 }
 
 .positions-table .table-header {
@@ -647,7 +647,7 @@ input:checked + .slider:before {
 }
 
 .tokens-table .table-row {
-    grid-template-columns: 70px 120px 180px 100px 100px 140px 80px 60px 80px 90px;
+    grid-template-columns: 70px 120px 180px 100px 100px 80px 80px 140px 80px 60px 80px 90px;
 }
 
 .positions-table .table-row {
@@ -1121,10 +1121,24 @@ input:checked + .slider:before {
 
 .col-market-cap,
 .col-price {
-    text-align: right;
     font-family: 'Monaco', monospace;
-    font-size: 12px;
-    padding: 0 8px;
+    font-size: 13px;
+    text-align: right;
+}
+
+.col-liquidity,
+.col-holders {
+    font-family: 'Monaco', monospace;
+    font-size: 13px;
+    text-align: right;
+}
+
+.col-liquidity {
+    color: #00d4ff;
+}
+
+.col-holders {
+    color: #ffd700;
 }
 
 .col-pool-data {

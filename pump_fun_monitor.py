@@ -45,6 +45,9 @@ class TokenInfo:
     tx_type: str = ""
     signature: str = ""
     pool: str = ""
+    # New filtering fields
+    liquidity: float = 0.0  # Liquidity in SOL
+    holders: int = 0  # Number of holders
     
 @dataclass
 class TradeInfo:
@@ -280,6 +283,13 @@ class PumpPortalMonitor:
         logger.info(f"  Price per token (SOL): {price_per_token:.12f}")
         logger.info(f"  Price per token (USD): ${price_usd:.12f}")
         
+        # Extract liquidity and holders (if available in data)
+        liquidity = data.get("liquidity", v_sol_in_bonding_curve)  # Use SOL in pool as liquidity if not specified
+        holders = data.get("holders", data.get("holderCount", 0))  # Try different field names for holders
+        
+        logger.info(f"  Liquidity (SOL): {liquidity:.4f}")
+        logger.info(f"  Holders: {holders}")
+        
         token_info = TokenInfo(
             mint=data.get("mint", ""),
             name=data.get("name", ""),
@@ -304,7 +314,9 @@ class PumpPortalMonitor:
             trader_public_key=data.get("traderPublicKey", ""),
             tx_type=data.get("txType", ""),
             signature=data.get("signature", ""),
-            pool=data.get("pool", "")
+            pool=data.get("pool", ""),
+            liquidity=liquidity,  # Liquidity in SOL
+            holders=holders  # Number of holders
         )
         
         # Debug log the final TokenInfo object
@@ -317,18 +329,95 @@ class PumpPortalMonitor:
         
         return token_info
     
+    def _process_trade_sync(self, data: Dict[str, Any]):
+        """Process trade data synchronously"""
+        try:
+            # Only process pool == 'pump'
+            if data.get("pool") != "pump":
+                logger.info(f"⏭️ SKIPPING - Not a pump pool (pool: {data.get('pool')})")
+                return
+            
+            # Parse trade data
+            trade_info = self.parse_trade_data(data)
+            
+            # Call trade callback
+            if self.trade_callback:
+                logger.info("📡 Calling trade callback...")
+                if asyncio.iscoroutinefunction(self.trade_callback):
+                    # For async callbacks, we need to schedule them in the event loop
+                    try:
+                        loop = asyncio.get_event_loop()
+                        asyncio.run_coroutine_threadsafe(self.trade_callback(trade_info), loop)
+                    except:
+                        # If no loop available, call synchronously
+                        asyncio.run(self.trade_callback(trade_info))
+                else:
+                    self.trade_callback(trade_info)
+                logger.info("✅ Trade callback completed")
+            else:
+                logger.warning("⚠️ No trade callback set!")
+                
+        except Exception as e:
+            logger.error(f"❌ Error processing trade: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+    
     def parse_trade_data(self, data: Dict[str, Any]) -> TradeInfo:
         """Parse trade data from WebSocket"""
-        return TradeInfo(
-            signature=data.get("signature", ""),
-            mint=data.get("mint", ""),
-            trader=data.get("trader", ""),
-            is_buy=data.get("is_buy", True),
-            amount=data.get("amount", 0.0),
-            price=data.get("price", 0.0),
-            market_cap=data.get("market_cap", 0.0),
-            timestamp=data.get("timestamp", int(datetime.now().timestamp()))
-        )
+        try:
+            # Extract trade information from PumpPortal data
+            mint = data.get("mint", "")
+            trader = data.get("traderPublicKey", data.get("trader", ""))
+            
+            # Determine if this is a buy or sell
+            tx_type = data.get("txType", "").lower()
+            is_buy = tx_type in ["buy", "swap"]
+            
+            # Extract amount and price
+            sol_amount = data.get("solAmount", 0.0)
+            token_amount = data.get("tokenAmount", 0.0)
+            
+            # Calculate price (SOL per token)
+            price = sol_amount / token_amount if token_amount > 0 else 0.0
+            
+            # Get market cap if available
+            market_cap_sol = data.get("marketCapSol", 0.0)
+            market_cap_usd = market_cap_sol * self.sol_price_usd
+            
+            # Get timestamp
+            timestamp = data.get("timestamp", int(datetime.now().timestamp()))
+            
+            logger.info(f"📊 Trade parsed: {mint}")
+            logger.info(f"   Trader: {trader}")
+            logger.info(f"   Type: {'BUY' if is_buy else 'SELL'}")
+            logger.info(f"   SOL Amount: {sol_amount}")
+            logger.info(f"   Token Amount: {token_amount}")
+            logger.info(f"   Price: {price:.12f} SOL")
+            
+            return TradeInfo(
+                signature=data.get("signature", ""),
+                mint=mint,
+                trader=trader,
+                is_buy=is_buy,
+                amount=sol_amount,
+                price=price,
+                market_cap=market_cap_usd,
+                timestamp=timestamp
+            )
+            
+        except Exception as e:
+            logger.error(f"❌ Error parsing trade data: {e}")
+            # Return a basic trade info object
+            return TradeInfo(
+                signature=data.get("signature", ""),
+                mint=data.get("mint", ""),
+                trader=data.get("traderPublicKey", ""),
+                is_buy=True,
+                amount=0.0,
+                price=0.0,
+                market_cap=0.0,
+                timestamp=int(datetime.now().timestamp())
+            )
     
     async def handle_message(self, message: str):
         """Handle incoming WebSocket messages"""
@@ -436,6 +525,13 @@ class PumpPortalMonitor:
             market_cap_usd = market_cap_sol * self.sol_price_usd
             price_usd = price_per_token * self.sol_price_usd
             
+            # Extract liquidity and holders (if available in data)
+            liquidity = data.get("liquidity", v_sol_in_bonding_curve)  # Use SOL in pool as liquidity if not specified
+            holders = data.get("holders", data.get("holderCount", 0))  # Try different field names for holders
+            
+            logger.info(f"  Liquidity (SOL): {liquidity:.4f}")
+            logger.info(f"  Holders: {holders}")
+            
             # Create TokenInfo object
             token_info = TokenInfo(
                 mint=data.get("mint", ""),
@@ -460,7 +556,9 @@ class PumpPortalMonitor:
                 trader_public_key=data.get("traderPublicKey", ""),
                 tx_type=data.get("txType", ""),
                 signature=data.get("signature", ""),
-                pool=data.get("pool", "")
+                pool=data.get("pool", ""),
+                liquidity=liquidity,  # Liquidity in SOL
+                holders=holders  # Number of holders
             )
             
             # Add to known tokens
@@ -511,10 +609,16 @@ class PumpPortalMonitor:
                 # Check for token data
                 required_fields = ['mint', 'symbol', 'name']
                 if not all(field in data for field in required_fields):
+                    # This might be trade data, try to process it
+                    if 'mint' in data and 'trader' in data:
+                        self._process_trade_sync(data)
                     return
                 
                 # Check for token creation
                 if data.get('txType') != 'create':
+                    # This might be trade data, try to process it
+                    if 'mint' in data and 'trader' in data:
+                        self._process_trade_sync(data)
                     return
                 
                 # Check if already processed

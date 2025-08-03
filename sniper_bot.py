@@ -39,6 +39,14 @@ class Position:
     current_pnl: float = 0.0
     current_pnl_percent: float = 0.0
     is_active: bool = True
+    # New fields for buy activity monitoring
+    buy_count_since_entry: int = 0  # Number of buys since we entered
+    last_buy_timestamp: int = 0  # Timestamp of last buy detected
+    buyers_since_entry: set = None  # Set of buyer addresses since our entry
+    
+    def __post_init__(self):
+        if self.buyers_since_entry is None:
+            self.buyers_since_entry = set()
 
 class SniperBot:
     """Main sniper bot class"""
@@ -46,14 +54,16 @@ class SniperBot:
     def __init__(self):
         self.keypair = None
         self.monitor = PumpPortalMonitor()
-        self.trader = PumpPortalTrader()
+        self.trader = PumpPortalTrader()  # Initialize without keypair initially
         self.positions = {}
         self.monitoring_task = None
         self.position_monitoring_task = None
+        self.buy_activity_monitoring_task = None  # New task for monitoring buy activity
         self.ui_callback = None
         
-        # Set up monitor callback to handle new tokens
+        # Set up monitor callbacks
         self.monitor.set_new_token_callback(self._handle_new_token)
+        self.monitor.set_trade_callback(self._handle_trade_activity)  # New callback for trade monitoring
         
         # Check if wallet is already configured
         self._check_wallet_on_startup()
@@ -84,6 +94,9 @@ class SniperBot:
             
             # Create keypair
             self.keypair = Keypair.from_bytes(decoded_key)
+            
+            # Set the trader's wallet
+            self.trader.set_wallet(decoded_key)
             
             # Initialize Solana client
             self.solana_client = AsyncClient(HELIUS_RPC_URL)
@@ -158,6 +171,8 @@ class SniperBot:
                 'stop_loss_percent': config_manager.config.bot_settings.stop_loss_percent,
                 'min_market_cap': config_manager.config.bot_settings.min_market_cap,
                 'max_market_cap': config_manager.config.bot_settings.max_market_cap,
+                'min_liquidity': config_manager.config.bot_settings.min_liquidity,
+                'min_holders': config_manager.config.bot_settings.min_holders,
                 'auto_buy': config_manager.config.bot_settings.auto_buy,
                 'auto_sell': config_manager.config.bot_settings.auto_sell,
             }
@@ -192,6 +207,9 @@ class SniperBot:
             # Start position monitoring
             self.position_monitoring_task = asyncio.create_task(self._monitor_positions())
             
+            # Start buy activity monitoring
+            self.buy_activity_monitoring_task = asyncio.create_task(self._monitor_buy_activity())
+            
             logger.info("✅ Monitoring system started")
             return True
             
@@ -225,6 +243,12 @@ class SniperBot:
             except Exception as e:
                 logger.warning(f"⚠️ Error canceling position monitoring task: {e}")
             
+            try:
+                if self.buy_activity_monitoring_task and not self.buy_activity_monitoring_task.done():
+                    self.buy_activity_monitoring_task.cancel()
+            except Exception as e:
+                logger.warning(f"⚠️ Error canceling buy activity monitoring task: {e}")
+            
             logger.info("✅ Monitoring system stopped")
             return True
             
@@ -243,7 +267,17 @@ class SniperBot:
                 logger.info(f"⏭️ Token {token.symbol} filtered out by market cap: ${token.market_cap:,.0f}")
                 return
             
-            # Emit to UI
+            # Check liquidity filter
+            if token.liquidity < settings.min_liquidity:
+                logger.info(f"⏭️ Token {token.symbol} filtered out by liquidity: {token.liquidity:.4f} SOL (min: {settings.min_liquidity} SOL)")
+                return
+            
+            # Check holders filter
+            if token.holders < settings.min_holders:
+                logger.info(f"⏭️ Token {token.symbol} filtered out by holders: {token.holders} (min: {settings.min_holders})")
+                return
+            
+            # Emit to UI for manual buying
             if self.ui_callback:
                 self.ui_callback('new_token', {
                     'mint': token.mint,
@@ -254,37 +288,75 @@ class SniperBot:
                     'sol_in_pool': token.sol_in_pool,
                     'tokens_in_pool': token.tokens_in_pool,
                     'initial_buy': token.initial_buy,
+                    'liquidity': token.liquidity,
+                    'holders': token.holders,
                     'created_timestamp': token.created_timestamp
                 })
             
-            # Auto-buy logic
-            if settings.auto_buy and len([p for p in self.positions if p.is_active]) < settings.max_positions:
-                logger.info(f"🎯 Auto-buying {token.symbol}...")
-                success = await self.buy_token(token.mint, settings.sol_per_snipe)
-                if success:
-                    logger.info(f"✅ Auto-buy successful for {token.symbol}")
-                else:
-                    logger.warning(f"⚠️ Auto-buy failed for {token.symbol}")
+            logger.info(f"📊 Token {token.symbol} displayed for manual buying")
             
         except Exception as e:
             logger.error(f"❌ Error handling new token: {e}")
     
     async def buy_token(self, mint: str, sol_amount: float) -> bool:
-        """Buy a token"""
+        """Buy a token manually"""
         try:
             if not self.keypair:
                 logger.error("❌ No wallet connected")
                 return False
             
+            # Check if we already have a position for this token
+            if mint in self.positions and self.positions[mint].is_active:
+                logger.warning(f"⚠️ Already have an active position for {mint}")
+                return False
+            
+            # Check max positions limit
+            active_positions = len([p for p in self.positions.values() if p.is_active])
+            settings = config_manager.config.bot_settings
+            if active_positions >= settings.max_positions:
+                logger.warning(f"⚠️ Max positions reached ({active_positions}/{settings.max_positions})")
+                return False
+            
             logger.info(f"💰 Buying {sol_amount} SOL worth of {mint}")
             
             # Use trader to execute buy
-            success = await self.trader.buy_token(self.keypair, mint, sol_amount)
+            success, signature, token_amount = await self.trader.buy_token(mint, sol_amount)
             
             if success:
                 logger.info(f"✅ Buy successful for {mint}")
+                
+                # Create position record
+                position = Position(
+                    token_mint=mint,
+                    token_symbol="",  # Will be updated when we get token info
+                    token_name="",    # Will be updated when we get token info
+                    entry_price=0.0,  # Will be updated when we get current price
+                    entry_timestamp=int(datetime.now().timestamp()),
+                    sol_amount=sol_amount,
+                    token_amount=token_amount,  # Use the actual token amount received
+                    buy_count_since_entry=0,
+                    last_buy_timestamp=int(datetime.now().timestamp()),
+                    buyers_since_entry=set()
+                )
+                
+                self.positions[mint] = position
+                
+                # Subscribe to trade monitoring for this token
+                await self.monitor.subscribe_token_trades([mint])
+                
                 # Update balance
                 await self._update_wallet_balance()
+                
+                # Emit position update to UI
+                if self.ui_callback:
+                    self.ui_callback('position_update', {
+                        'mint': mint,
+                        'action': 'buy',
+                        'sol_amount': sol_amount,
+                        'timestamp': position.entry_timestamp
+                    })
+                
+                logger.info(f"📊 Position created and monitoring started for {mint}")
                 return True
             else:
                 logger.error(f"❌ Buy failed for {mint}")
@@ -301,18 +373,53 @@ class SniperBot:
                 logger.error("❌ No wallet connected")
                 return False
             
-            logger.info(f"💸 Selling position for {mint}")
+            if mint not in self.positions or not self.positions[mint].is_active:
+                logger.warning(f"⚠️ No active position found for {mint}")
+                return False
+            
+            position = self.positions[mint]
+            logger.info(f"💸 Selling position for {position.token_symbol or mint}")
             
             # Use trader to execute sell
-            success = await self.trader.sell_token(self.keypair, mint)
+            success, signature, sol_received = await self.trader.sell_token(mint, position.token_amount)
             
             if success:
-                logger.info(f"✅ Sell successful for {mint}")
+                logger.info(f"✅ Sell successful for {position.token_symbol or mint}")
+                
+                # Calculate P&L based on SOL received vs SOL invested
+                if sol_received > 0:
+                    pnl_sol = sol_received - position.sol_amount
+                    pnl_percent = (pnl_sol / position.sol_amount) * 100
+                    
+                    position.current_pnl = pnl_sol
+                    position.current_pnl_percent = pnl_percent
+                    
+                    logger.info(f"💰 P&L: {pnl_percent:.2f}% ({pnl_sol:.4f} SOL)")
+                
+                # Close position
+                position.is_active = False
+                
+                # Update total P&L
+                total_pnl = config_manager.config.bot_state.total_pnl + position.current_pnl
+                config_manager.update_bot_state(total_pnl=total_pnl)
+                
                 # Update balance
                 await self._update_wallet_balance()
+                
+                # Emit position update to UI
+                if self.ui_callback:
+                    self.ui_callback('position_update', {
+                        'mint': mint,
+                        'action': 'sell',
+                        'pnl': position.current_pnl,
+                        'pnl_percent': position.current_pnl_percent,
+                        'buy_count': position.buy_count_since_entry,
+                        'timestamp': int(datetime.now().timestamp())
+                    })
+                
                 return True
             else:
-                logger.error(f"❌ Sell failed for {mint}")
+                logger.error(f"❌ Sell failed for {position.token_symbol or mint}")
                 return False
                 
         except Exception as e:
@@ -325,30 +432,106 @@ class SniperBot:
             settings = config_manager.config.bot_settings
             
             while config_manager.config.bot_state.is_running:
-                for position in self.positions:
+                for mint, position in self.positions.items():
                     if not position.is_active:
                         continue
                     
-                    # Calculate current P&L
-                    if position.current_price > 0:
+                    # Calculate current P&L if we have price data
+                    if position.current_price > 0 and position.entry_price > 0:
                         pnl_percent = ((position.current_price - position.entry_price) / position.entry_price) * 100
                         position.current_pnl_percent = pnl_percent
                         
-                        # Check auto-sell conditions
+                        # Check auto-sell conditions (profit target or stop loss)
                         if settings.auto_sell:
                             if pnl_percent >= settings.profit_target_percent:
-                                logger.info(f"🎯 Profit target reached for {position.token_symbol}: {pnl_percent:.1f}%")
-                                await self.sell_token(position.token_mint)
+                                logger.info(f"🎯 Profit target reached for {position.token_symbol or mint}: {pnl_percent:.1f}%")
+                                await self.sell_token(mint)
                             elif pnl_percent <= -settings.stop_loss_percent:
-                                logger.info(f"🛑 Stop loss triggered for {position.token_symbol}: {pnl_percent:.1f}%")
-                                await self.sell_token(position.token_mint)
+                                logger.info(f"🛑 Stop loss triggered for {position.token_symbol or mint}: {pnl_percent:.1f}%")
+                                await self.sell_token(mint)
+                    
+                    # Check buy count condition (3 additional buyers)
+                    if position.buy_count_since_entry >= 3:
+                        logger.info(f"🎯 3 additional buyers reached for {position.token_symbol or mint} - Selling!")
+                        await self.sell_token(mint)
                 
                 await asyncio.sleep(10)  # Check every 10 seconds
                 
         except asyncio.CancelledError:
             logger.info("📊 Position monitoring stopped")
         except Exception as e:
-            logger.error(f"❌ Error monitoring positions: {e}") 
+            logger.error(f"❌ Error monitoring positions: {e}")
+
+    async def _handle_trade_activity(self, trade_info):
+        """Handle trade activity for monitoring buy counts"""
+        try:
+            mint = trade_info.mint
+            
+            # Check if we have an active position for this token
+            if mint not in self.positions or not self.positions[mint].is_active:
+                return
+            
+            position = self.positions[mint]
+            
+            # Only process buy transactions
+            if not trade_info.is_buy:
+                return
+            
+            # Skip our own buys
+            if trade_info.trader == str(self.keypair.pubkey()):
+                return
+            
+            # Check if this is a new buyer (not seen before)
+            if trade_info.trader not in position.buyers_since_entry:
+                position.buyers_since_entry.add(trade_info.trader)
+                position.buy_count_since_entry += 1
+                position.last_buy_timestamp = trade_info.timestamp
+                
+                logger.info(f"🆕 New buyer detected for {position.token_symbol or mint}: {trade_info.trader}")
+                logger.info(f"📊 Buy count since entry: {position.buy_count_since_entry}")
+                
+                # Check if we should sell (3 additional buyers)
+                if position.buy_count_since_entry >= 3:
+                    logger.info(f"🎯 3 additional buyers detected for {position.token_symbol or mint} - Selling!")
+                    await self.sell_token(mint)
+                    return
+            
+            # Update position with current price
+            position.current_price = trade_info.price
+            
+            # Emit position update to UI
+            if self.ui_callback:
+                self.ui_callback('position_update', {
+                    'mint': mint,
+                    'buy_count': position.buy_count_since_entry,
+                    'current_price': trade_info.price,
+                    'timestamp': trade_info.timestamp
+                })
+                
+        except Exception as e:
+            logger.error(f"❌ Error handling trade activity: {e}")
+
+    async def _monitor_buy_activity(self):
+        """Monitor buy activity for active positions"""
+        try:
+            logger.info("📊 Starting buy activity monitoring...")
+            
+            while config_manager.config.bot_state.is_running:
+                # Check each active position
+                for mint, position in self.positions.items():
+                    if not position.is_active:
+                        continue
+                    
+                    # Log current buy count for debugging
+                    if position.buy_count_since_entry > 0:
+                        logger.debug(f"📊 {position.token_symbol or mint}: {position.buy_count_since_entry}/3 buyers")
+                
+                await asyncio.sleep(5)  # Check every 5 seconds
+                
+        except asyncio.CancelledError:
+            logger.info("📊 Buy activity monitoring stopped")
+        except Exception as e:
+            logger.error(f"❌ Error monitoring buy activity: {e}")
 
     def get_wallet_balance_sync(self) -> float:
         """Get wallet balance synchronously (for startup/status checks)"""

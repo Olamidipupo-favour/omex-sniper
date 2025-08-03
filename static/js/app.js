@@ -228,6 +228,8 @@ class SniperBotApp {
                 stop_loss_percent: parseFloat(document.getElementById('stopLoss').value),
                 min_market_cap: parseFloat(document.getElementById('minMarketCap').value),
                 max_market_cap: parseFloat(document.getElementById('maxMarketCap').value),
+                min_liquidity: parseFloat(document.getElementById('minLiquidity').value),
+                min_holders: parseInt(document.getElementById('minHolders').value),
                 auto_buy: document.getElementById('autoBuy').checked,
                 auto_sell: document.getElementById('autoSell').checked
             };
@@ -431,6 +433,8 @@ class SniperBotApp {
                 </div>
                 <div class="col-market-cap">$${typeof token.market_cap === 'number' ? token.market_cap.toLocaleString() : '0'}</div>
                 <div class="col-price">$${typeof token.price === 'number' ? token.price.toFixed(8) : '0.00000000'}</div>
+                <div class="col-liquidity">${typeof token.liquidity === 'number' ? token.liquidity.toFixed(2) : '0.00'} SOL</div>
+                <div class="col-holders">${typeof token.holders === 'number' ? token.holders.toLocaleString() : '0'}</div>
                 <div class="col-pool-data">
                     <div class="pool-info">
                         <small>SOL: ${typeof token.sol_in_pool === 'number' ? token.sol_in_pool.toFixed(2) : 'N/A'}</small>
@@ -688,6 +692,8 @@ class SniperBotApp {
             document.getElementById('stopLoss').value = status.settings.stop_loss_percent;
             document.getElementById('minMarketCap').value = status.settings.min_market_cap;
             document.getElementById('maxMarketCap').value = status.settings.max_market_cap;
+            document.getElementById('minLiquidity').value = status.settings.min_liquidity;
+            document.getElementById('minHolders').value = status.settings.min_holders;
             document.getElementById('autoBuy').checked = status.settings.auto_buy;
             document.getElementById('autoSell').checked = status.settings.auto_sell;
         }

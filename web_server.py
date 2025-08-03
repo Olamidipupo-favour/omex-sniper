@@ -175,6 +175,8 @@ def update_settings():
             'stop_loss_percent': float,
             'min_market_cap': float,
             'max_market_cap': float,
+            'min_liquidity': float,
+            'min_holders': int,
             'auto_buy': bool,
             'auto_sell': bool
         }

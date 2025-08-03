@@ -16,10 +16,12 @@ from datetime import datetime
 
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
-from solders.transaction import Transaction
+from solders.transaction import Transaction, VersionedTransaction
+from solders.rpc.config import RpcSendTransactionConfig
 from solana.rpc.api import Client
 from solana.rpc.async_api import AsyncClient
-from config import Config
+from solana.rpc.types import TxOpts
+from config import PUMPPORTAL_API_URL, HELIUS_RPC_URL, PUMPPORTAL_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,7 @@ ssl_context.verify_mode = ssl.CERT_NONE
 class PumpPortalTrader:
     """Handles trading operations via PumpPortal API"""
     
-    def __init__(self, private_key: bytes = None, rpc_url: str = Config.HELIUS_RPC_URL):
+    def __init__(self, private_key: bytes = None, rpc_url: str = HELIUS_RPC_URL):
         self.private_key = private_key
         self.rpc_url = rpc_url
         self.rpc_client = Client(rpc_url)
@@ -78,52 +80,99 @@ class PumpPortalTrader:
     async def build_transaction(self, action: str, mint: str, amount: float, slippage: float = 5.0, pool: str = "pump") -> Optional[Dict[str, Any]]:
         """Build transaction using PumpPortal API"""
         try:
-            await self.start_session()
-            
-            if action == "buy":
-                # Convert SOL to lamports
-                lamports = int(amount * 1e9)
-                url = f"{Config.PUMP_FUN_API_URL}/trade-local"
-                
-                params = {
-                    "action": "buy",
-                    "mint": mint,
-                    "sol": lamports,
-                    "slippage": int(slippage * 100),  # Convert to basis points
-                    "pool": pool
-                }
-            elif action == "sell":
-                # amount is token amount for sell
-                url = f"{Config.PUMP_FUN_API_URL}/trade-local"
-                
-                params = {
-                    "action": "sell",
-                    "mint": mint,
-                    "amount": int(amount),
-                    "slippage": int(slippage * 100),
-                    "pool": pool
-                }
-            else:
-                raise ValueError(f"Invalid action: {action}")
-            
-            if Config.PUMPPORTAL_API_KEY:
-                headers = {"Authorization": f"Bearer {Config.PUMPPORTAL_API_KEY}"}
-            else:
-                headers = {}
-            
-            logger.info(f"Building {action} transaction for {mint}")
-            
-            async with self.session.post(url, json=params, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data
-                else:
-                    error_text = await response.text()
-                    logger.error(f"API error {response.status}: {error_text}")
+            # Create a new session for this request to avoid event loop issues
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                if not self.keypair:
+                    logger.error("❌ No wallet keypair available")
                     return None
+                
+                # Get wallet public key
+                public_key = str(self.keypair.pubkey())
+                
+                # Prepare request data according to PumpPortal API docs
+                if action == "buy":
+                    # For buy, amount is SOL and denominatedInSol should be "true"
+                    request_data = {
+                        "publicKey": public_key,
+                        "action": "buy",
+                        "mint": mint,
+                        "amount": int(amount * 1e9),  # Convert SOL to lamports
+                        "denominatedInSol": "true",
+                        "slippage": int(slippage),
+                        "priorityFee": 0.005,  # Default priority fee
+                        "pool": pool
+                    }
+                elif action == "sell":
+                    # For sell, amount is token amount and denominatedInSol should be "false"
+                    request_data = {
+                        "publicKey": public_key,
+                        "action": "sell",
+                        "mint": mint,
+                        "amount": int(amount),  # Token amount
+                        "denominatedInSol": "false",
+                        "slippage": int(slippage),
+                        "priorityFee": 0.005,  # Default priority fee
+                        "pool": pool
+                    }
+                else:
+                    raise ValueError(f"Invalid action: {action}")
+                
+                url = f"{PUMPPORTAL_API_URL}/trade-local"
+                
+                # Log the request details
+                logger.info(f"📤 Building {action} transaction for {mint}")
+                logger.info(f"🔗 URL: {url}")
+                logger.info(f"📊 Request data: {request_data}")
+                
+                # Make the request
+                async with session.post(url, data=request_data) as response:
+                    logger.info(f"📥 Response status: {response.status}")
+                    logger.info(f"📥 Response headers: {dict(response.headers)}")
                     
+                    if response.status == 200:
+                        # Get response as bytes first
+                        response_bytes = await response.read()
+                        logger.info(f"📥 Response bytes length: {len(response_bytes)}")
+                        logger.info(f"📥 First 100 bytes: {response_bytes[:100]}")
+                        
+                        # Try to decode as text first (for error messages)
+                        try:
+                            response_text = response_bytes.decode('utf-8')
+                            logger.info(f"📥 Response as text: {response_text}")
+                            
+                            # Check if it's JSON (error message or metadata)
+                            if response_text.strip().startswith('{'):
+                                try:
+                                    data = json.loads(response_text)
+                                    logger.info(f"✅ JSON response received: {data}")
+                                    return data
+                                except json.JSONDecodeError:
+                                    logger.info("📥 Not JSON, treating as raw transaction")
+                            
+                            # If it's not JSON, treat as base58 encoded transaction
+                            logger.info(f"✅ Base58 transaction received")
+                            return {"transaction": response_text}
+                            
+                        except UnicodeDecodeError:
+                            # If it can't be decoded as UTF-8, it's raw binary transaction data
+                            logger.info(f"✅ Raw binary transaction received (bytes: {len(response_bytes)})")
+                            return {"transaction": response_bytes}
+                    else:
+                        # For error responses, try to get text
+                        try:
+                            response_text = await response.text()
+                            logger.error(f"❌ API error {response.status}: {response_text}")
+                        except:
+                            response_bytes = await response.read()
+                            logger.error(f"❌ API error {response.status}: Binary response (bytes: {len(response_bytes)})")
+                        
+                        logger.error(f"❌ Request data that failed: {request_data}")
+                        return None
+                        
         except Exception as e:
-            logger.error(f"Error building transaction: {e}")
+            logger.error(f"❌ Error building transaction: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return None
     
     async def sign_and_send_transaction(self, transaction_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
@@ -132,53 +181,123 @@ class PumpPortalTrader:
             if not self.keypair:
                 raise ValueError("Wallet not set")
             
-            # Extract transaction from response
-            if "transaction" not in transaction_data:
-                logger.error("No transaction in response")
-                return False, None
+            logger.info(f"🔧 Transaction data received: {transaction_data}")
+            
+            # Handle different response formats
+            if "transaction" in transaction_data:
+                # Standard format with transaction field
+                tx_data = transaction_data["transaction"]
+            else:
+                # Raw transaction data
+                tx_data = transaction_data
+            
+            logger.info(f"📦 Transaction data type: {type(tx_data)}")
+            logger.info(f"📦 Transaction data length: {len(str(tx_data))}")
             
             # Decode the transaction
-            tx_bytes = base58.b58decode(transaction_data["transaction"])
-            tx = Transaction.deserialize(tx_bytes)
-            
-            # Sign transaction
-            tx.sign(self.keypair)
-            
-            # Send transaction
-            signature = await self.async_rpc_client.send_transaction(
-                tx,
-                opts={"skip_preflight": True, "max_retries": 3}
-            )
-            
-            if signature.value:
-                logger.info(f"Transaction sent: {signature.value}")
-                
-                # Wait for confirmation
-                confirmed = await self._wait_for_confirmation(signature.value)
-                if confirmed:
-                    return True, signature.value
+            try:
+                if isinstance(tx_data, str):
+                    # If it's a string, try to decode as base58
+                    tx_bytes = base58.b58decode(tx_data)
+                elif isinstance(tx_data, bytes):
+                    # If it's already bytes, use directly
+                    tx_bytes = tx_data
                 else:
-                    logger.error("Transaction failed confirmation")
-                    return False, signature.value
-            else:
-                logger.error("Failed to send transaction")
+                    logger.error(f"❌ Unexpected transaction data type: {type(tx_data)}")
+                    return False, None
+                
+                logger.info(f"🔧 Decoded transaction bytes length: {len(tx_bytes)}")
+                logger.info(f"🔧 First 50 bytes: {tx_bytes[:50]}")
+                
+                # Try to deserialize as VersionedTransaction first
+                try:
+                    tx = VersionedTransaction.from_bytes(tx_bytes)
+                    logger.info("✅ Transaction deserialized as VersionedTransaction")
+                except Exception as e:
+                    logger.info(f"⚠️ Not a VersionedTransaction, trying regular Transaction: {e}")
+                    # Fallback to regular Transaction
+                    tx = Transaction.deserialize(tx_bytes)
+                    logger.info("✅ Transaction deserialized as regular Transaction")
+                
+                # Sign transaction
+                if hasattr(tx, 'sign'):
+                    tx.sign(self.keypair)
+                    logger.info("✅ Transaction signed")
+                else:
+                    # For VersionedTransaction, we need to create a new one with signatures
+                    tx = VersionedTransaction(tx.message, [self.keypair])
+                    logger.info("✅ VersionedTransaction created with signature")
+                
+                # Send transaction using a new client to avoid event loop issues
+                logger.info("📤 Sending transaction...")
+                async with AsyncClient(self.rpc_url) as client:
+                    # Create proper options object
+                    # opts = RpcSendTransactionConfig(
+                    #     skip_preflight=True,
+                    #     max_retries=3,
+                    #     preflight_commitment="confirmed",
+                    # )
+                    latest=await client.get_latest_blockhash(commitment="confirmed")
+                    opts = TxOpts(
+                        skip_preflight=False,
+                        max_retries=3,
+                        preflight_commitment="confirmed",
+                        skip_confirmation=False,
+                        last_valid_block_height=latest.value.last_valid_block_height,
+                    )
+                    
+                    signature = await client.send_transaction(
+                        tx,
+                        opts=opts
+                    )
+                    
+                    if signature.value:
+                        logger.info(f"✅ Transaction sent: {signature.value}")
+                        
+                        # Wait for confirmation
+                        #confirmed = await self._wait_for_confirmation(signature.value, client)
+                        confirmed = True
+                        if confirmed:
+                            logger.info(f"✅ Transaction confirmed: {signature.value}")
+                            return True, signature.value
+                        else:
+                            logger.error("❌ Transaction failed confirmation")
+                            return False, signature.value
+                    else:
+                        logger.error("❌ Failed to send transaction")
+                        return False, None
+                        
+            except Exception as e:
+                logger.error(f"❌ Error processing transaction data: {e}")
+                import traceback
+                logger.error(f"❌ Traceback: {traceback.format_exc()}")
                 return False, None
                 
         except Exception as e:
-            logger.error(f"Error signing/sending transaction: {e}")
+            logger.error(f"❌ Error signing/sending transaction: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return False, None
     
-    async def _wait_for_confirmation(self, signature: str, timeout: int = 30) -> bool:
+    async def _wait_for_confirmation(self, signature: str, client: AsyncClient = None, timeout: int = 30) -> bool:
         """Wait for transaction confirmation"""
         try:
             start_time = time.time()
             
+            # Use provided client or create a new one
+            if client is None:
+                client = self.async_rpc_client
+            
             while time.time() - start_time < timeout:
                 try:
-                    result = await self.async_rpc_client.get_signature_statuses([signature])
-                    if result.value and len(result.value) > 0:
+                    result = await client.get_signature_statuses([signature], search_transaction_history=True)
+                    if result.value and len(result.value) > 0 and None not in result.value:
+                        logger.info(f"🙈 Transaction : {result}")
+                        exit()
                         status = result.value[0]
                         if status and status.confirmation_status:
+                            logger.info(f"Transaction status: {status}")
+                            logger.info(f"Transaction confirmation status: {status.confirmation_status}")
                             if status.confirmation_status in ["confirmed", "finalized"]:
                                 logger.info(f"Transaction confirmed: {signature}")
                                 return True

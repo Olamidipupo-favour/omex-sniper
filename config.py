@@ -41,6 +41,8 @@ class BotSettings:
     stop_loss_percent: float = 20.0
     min_market_cap: float = 1000.0
     max_market_cap: float = 100000.0
+    min_liquidity: float = 100.0  # Minimum liquidity in SOL
+    min_holders: int = 10  # Minimum number of holders
     auto_buy: bool = False
     auto_sell: bool = True
 
