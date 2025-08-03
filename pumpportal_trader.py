@@ -255,8 +255,8 @@ class PumpPortalTrader:
                         logger.info(f"✅ Transaction sent: {signature.value}")
                         
                         # Wait for confirmation
-                        #confirmed = await self._wait_for_confirmation(signature.value, client)
-                        confirmed = True
+                        confirmed = await self._wait_for_confirmation(signature.value, client)
+                        #confirmed = True
                         if confirmed:
                             logger.info(f"✅ Transaction confirmed: {signature.value}")
                             return True, signature.value
