@@ -7,10 +7,13 @@
     "stop_loss_percent": 20.0,
     "min_market_cap": 10000.0,
     "max_market_cap": 70000.0,
-    "min_liquidity": 30.0,
+    "min_liquidity": 10.0,
     "min_holders": 0,
     "auto_buy": false,
-    "auto_sell": true
+    "auto_sell": true,
+    "token_age_filter": "last_7_days",
+    "custom_days": 7,
+    "include_pump_tokens": true
   },
   "bot_state": {
     "is_running": true,

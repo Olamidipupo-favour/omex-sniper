@@ -128,6 +128,36 @@
                             </div>
                         </div>
 
+                        <!-- Token Age Filter Settings -->
+                        <div class="section-header">
+                            <h4><i class="fas fa-filter"></i> Token Age Filter</h4>
+                        </div>
+                        <div class="token-age-settings">
+                            <div class="setting-item">
+                                <label>Token Age Filter</label>
+                                <select id="tokenAgeFilter" class="input-field">
+                                    <option value="new_only">Newly Created Only</option>
+                                    <option value="last_1_day">Last 1 Day</option>
+                                    <option value="last_3_days">Last 3 Days</option>
+                                    <option value="last_7_days">Last 7 Days</option>
+                                    <option value="last_14_days">Last 14 Days</option>
+                                    <option value="last_30_days">Last 30 Days</option>
+                                    <option value="custom_days">Custom Days</option>
+                                </select>
+                            </div>
+                            <div class="setting-item" id="customDaysContainer" style="display: none;">
+                                <label>Custom Days</label>
+                                <input type="number" id="customDays" min="1" max="365" value="7" class="input-field" placeholder="Enter number of days">
+                            </div>
+                            <div class="setting-item">
+                                <label class="toggle">
+                                    <input type="checkbox" id="includePumpTokens" checked>
+                                    <span class="slider"></span>
+                                </label>
+                                <span class="toggle-label">Include Pump.fun Tokens</span>
+                            </div>
+                        </div>
+
                         <button class="btn btn-secondary" id="updateSettingsBtn">
                             <i class="fas fa-save"></i> Update Settings
                         </button>

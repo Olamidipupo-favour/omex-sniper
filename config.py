@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
 HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet-beta.solana.com"
 
+# Log the RPC configuration
+if HELIUS_API_KEY:
+    logger.info("🔧 Helius API key configured - using Helius RPC")
+else:
+    logger.info("🔧 No Helius API key - using public Solana RPC")
+
 # PumpPortal Configuration  
 PUMPPORTAL_API_URL = "https://pumpportal.fun/api"
 PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data"
@@ -45,6 +51,10 @@ class BotSettings:
     min_holders: int = 10  # Minimum number of holders
     auto_buy: bool = False
     auto_sell: bool = True
+    # Token age filter settings
+    token_age_filter: str = "new_only"  # new_only, last_1_day, last_3_days, last_7_days, last_14_days, last_30_days, custom_days
+    custom_days: int = 7  # Custom number of days for token age filter
+    include_pump_tokens: bool = True  # Include tokens from Pump.fun API
 
 @dataclass
 class BotState:

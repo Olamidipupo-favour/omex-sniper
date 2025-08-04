@@ -45,6 +45,16 @@ class SniperBotApp {
             input.addEventListener('change', () => this.validateSettings());
         });
         
+        // Token age filter dropdown
+        document.getElementById('tokenAgeFilter').addEventListener('change', (e) => {
+            const customDaysContainer = document.getElementById('customDaysContainer');
+            if (e.target.value === 'custom_days') {
+                customDaysContainer.style.display = 'block';
+            } else {
+                customDaysContainer.style.display = 'none';
+            }
+        });
+        
         // Manual trade buttons (will be added dynamically)
         document.addEventListener('click', (e) => {
             if (e.target.classList.contains('buy-btn')) {
@@ -288,7 +298,10 @@ class SniperBotApp {
                 min_liquidity: parseFloat(document.getElementById('minLiquidity').value),
                 min_holders: parseInt(document.getElementById('minHolders').value),
                 auto_buy: document.getElementById('autoBuy').checked,
-                auto_sell: document.getElementById('autoSell').checked
+                auto_sell: document.getElementById('autoSell').checked,
+                token_age_filter: document.getElementById('tokenAgeFilter').value,
+                custom_days: parseInt(document.getElementById('customDays').value),
+                include_pump_tokens: document.getElementById('includePumpTokens').checked
             };
             
             const response = await fetch('/api/settings/update', {
@@ -542,7 +555,10 @@ class SniperBotApp {
                 <div class="col-initial-buy">
                     <span class="initial-buy">${this.formatTokenAmount(token.initial_buy)}</span>
                 </div>
-                <div class="col-time">${this.formatTime(token.created_timestamp || token.timestamp)}</div>
+                <div class="col-time">
+                    <div>${this.formatTime(token.created_timestamp || token.timestamp)}</div>
+                    ${token.age_days ? `<div class="age-info" title="Token age">${token.age_days.toFixed(1)}d old</div>` : ''}
+                </div>
                 <div class="col-links">
                     <a href="https://pump.fun/${token.mint}" target="_blank" class="pump-link" title="View on Pump.Fun">
                         <i class="fas fa-rocket"></i>
@@ -794,6 +810,17 @@ class SniperBotApp {
             document.getElementById('minHolders').value = status.settings.min_holders;
             document.getElementById('autoBuy').checked = status.settings.auto_buy;
             document.getElementById('autoSell').checked = status.settings.auto_sell;
+            document.getElementById('tokenAgeFilter').value = status.settings.token_age_filter || 'new_only';
+            document.getElementById('customDays').value = status.settings.custom_days || 7;
+            document.getElementById('includePumpTokens').checked = status.settings.include_pump_tokens !== false;
+            
+            // Show/hide custom days container based on filter selection
+            const customDaysContainer = document.getElementById('customDaysContainer');
+            if (status.settings.token_age_filter === 'custom_days') {
+                customDaysContainer.style.display = 'block';
+            } else {
+                customDaysContainer.style.display = 'none';
+            }
         }
         
         // Update header stats

@@ -13,10 +13,12 @@ from solders.pubkey import Pubkey
 from solana.rpc.async_api import AsyncClient
 from dataclasses import dataclass
 from datetime import datetime
+import time
 
 from config import config_manager, HELIUS_RPC_URL
 from pump_fun_monitor import PumpPortalMonitor, TokenInfo
 from pumpportal_trader import PumpPortalTrader
+from token_filter_service import TokenFilterService
 
 # Configure logging
 logging.basicConfig(
@@ -55,6 +57,7 @@ class SniperBot:
         self.keypair = None
         self.monitor = PumpPortalMonitor()
         self.trader = PumpPortalTrader()  # Initialize without keypair initially
+        self.token_filter = TokenFilterService(helius_rpc_url=HELIUS_RPC_URL)  # Initialize with Helius RPC
         self.positions = {}
         self.monitoring_task = None
         self.position_monitoring_task = None
@@ -175,6 +178,9 @@ class SniperBot:
                 'min_holders': config_manager.config.bot_settings.min_holders,
                 'auto_buy': config_manager.config.bot_settings.auto_buy,
                 'auto_sell': config_manager.config.bot_settings.auto_sell,
+                'token_age_filter': config_manager.config.bot_settings.token_age_filter,
+                'custom_days': config_manager.config.bot_settings.custom_days,
+                'include_pump_tokens': config_manager.config.bot_settings.include_pump_tokens,
             }
         }
     
@@ -187,6 +193,65 @@ class SniperBot:
         except Exception as e:
             logger.error(f"❌ Error updating settings: {e}")
             return False
+    
+    async def _load_historical_tokens(self):
+        """Load historical tokens based on age filter settings"""
+        try:
+            settings = config_manager.config.bot_settings
+            
+            # Only load historical tokens if not using "new_only" filter
+            if settings.token_age_filter == "new_only":
+                return
+            
+            logger.info(f"📚 Loading historical tokens for filter: {settings.token_age_filter}")
+            
+            # Get age threshold
+            age_threshold_days = self.token_filter._get_age_threshold_days(
+                settings.token_age_filter, 
+                settings.custom_days
+            )
+            
+            # Get historical tokens using hybrid approach (no Pump.fun restriction)
+            historical_tokens = await self.token_filter.get_hybrid_recent_tokens(
+                days=age_threshold_days,
+                include_pump_only=False  # Get all tokens, not just Pump.fun ones
+            )
+            
+            logger.info(f"📊 Loaded {len(historical_tokens)} historical tokens")
+            logger.info(f"📋 Historical tokens before processing: {historical_tokens}")
+            
+            # Process each historical token
+            processed_count = 0
+            for token_data in historical_tokens:
+                try:
+                    # Convert to TokenInfo format
+                    token = TokenInfo(
+                        mint=token_data.get('mint', ''),
+                        symbol=token_data.get('symbol', ''),
+                        name=token_data.get('name', ''),
+                        market_cap=token_data.get('market_cap', 0),
+                        price=token_data.get('price', 0),
+                        sol_in_pool=token_data.get('liquidity', 0),
+                        tokens_in_pool=0,
+                        initial_buy=0,
+                        liquidity=token_data.get('liquidity', 0),
+                        holders=token_data.get('holders', 0),
+                        created_timestamp=token_data.get('created_timestamp', int(time.time()))
+                    )
+                    
+                    logger.info(f"🔄 Processing historical token: {token.symbol} ({token.mint})")
+                    
+                    # Process the token through normal flow
+                    await self._handle_new_token(token)
+                    processed_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error processing historical token {token_data.get('mint', 'unknown')}: {e}")
+            
+            logger.info(f"✅ Successfully processed {processed_count} historical tokens")
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading historical tokens: {e}")
     
     async def start_monitoring(self) -> bool:
         """Start the monitoring system"""
@@ -201,13 +266,23 @@ class SniperBot:
             # Update wallet balance now that we have an event loop
             await self._update_wallet_balance()
             
-            # Start monitoring
-            self.monitoring_task = asyncio.create_task(self.monitor.start_monitoring())
+            settings = config_manager.config.bot_settings
             
-            # Start position monitoring
+            # Check if we're using historical filter or new-only filter
+            if settings.token_age_filter == "new_only":
+                # For "new_only" - start real-time monitoring
+                logger.info("📡 Starting real-time token monitoring...")
+                self.monitoring_task = asyncio.create_task(self.monitor.start_monitoring())
+            else:
+                # For historical filters - only load historical tokens, no real-time monitoring
+                logger.info(f"📚 Loading historical tokens for filter: {settings.token_age_filter}")
+                await self._load_historical_tokens()
+                # Don't start real-time monitoring for historical filters
+            
+            # Start position monitoring (always needed for active positions)
             self.position_monitoring_task = asyncio.create_task(self._monitor_positions())
             
-            # Start buy activity monitoring
+            # Start buy activity monitoring (always needed for active positions)
             self.buy_activity_monitoring_task = asyncio.create_task(self._monitor_buy_activity())
             
             logger.info("✅ Monitoring system started")
@@ -259,10 +334,45 @@ class SniperBot:
     async def _handle_new_token(self, token: TokenInfo):
         """Handle new token detection"""
         try:
-            logger.info(f"🔍 New token detected: {token.symbol} - Market Cap: ${token.market_cap:,.0f}")
+            settings = config_manager.config.bot_settings
+            
+            # Enrich token with age information (no Pump.fun checking)
+            token_dict = {
+                'mint': token.mint,
+                'symbol': token.symbol,
+                'name': token.name,
+                'market_cap': token.market_cap,
+                'price': token.price,
+                'sol_in_pool': token.sol_in_pool,
+                'tokens_in_pool': token.tokens_in_pool,
+                'initial_buy': token.initial_buy,
+                'liquidity': token.liquidity,
+                'holders': token.holders,
+                'created_timestamp': token.created_timestamp
+            }
+            
+            # Enrich with age info (no Pump.fun checking)
+            enriched_token = await self.token_filter.enrich_token_with_age_info(
+                token_dict, 
+                include_pump_check=False
+            )
+            
+            # Apply age filter
+            if settings.token_age_filter != "new_only":
+                # For non-new tokens, check if they meet the age criteria
+                age_threshold_days = self.token_filter._get_age_threshold_days(
+                    settings.token_age_filter, 
+                    settings.custom_days
+                )
+                
+                if not self.token_filter._is_token_within_age_limit(
+                    token.created_timestamp, 
+                    age_threshold_days
+                ):
+                    logger.info(f"⏭️ Token {token.symbol} filtered out by age: {enriched_token.get('age_days', 0):.1f} days old")
+                    return
             
             # Check market cap filters
-            settings = config_manager.config.bot_settings
             if token.market_cap < settings.min_market_cap or token.market_cap > settings.max_market_cap:
                 logger.info(f"⏭️ Token {token.symbol} filtered out by market cap: ${token.market_cap:,.0f}")
                 return
@@ -277,23 +387,24 @@ class SniperBot:
                 logger.info(f"⏭️ Token {token.symbol} filtered out by holders: {token.holders} (min: {settings.min_holders})")
                 return
             
+            # No Pump.fun requirement check - removed
+            
+            # Log filter description
+            filter_desc = self.token_filter.get_filter_description(
+                settings.token_age_filter, 
+                settings.custom_days
+            )
+            logger.info(f"🔍 Token {token.symbol} passed filters: {filter_desc}")
+            
             # Emit to UI for manual buying
             if self.ui_callback:
-                self.ui_callback('new_token', {
-                    'mint': token.mint,
-                    'symbol': token.symbol,
-                    'name': token.name,
-                    'market_cap': token.market_cap,
-                    'price': token.price,
-                    'sol_in_pool': token.sol_in_pool,
-                    'tokens_in_pool': token.tokens_in_pool,
-                    'initial_buy': token.initial_buy,
-                    'liquidity': token.liquidity,
-                    'holders': token.holders,
-                    'created_timestamp': token.created_timestamp
-                })
+                logger.info(f"📡 Emitting token to frontend: {token.symbol} ({token.mint})")
+                self.ui_callback('new_token', enriched_token)
+                logger.info(f"📡 Token emitted successfully: {enriched_token}")
+            else:
+                logger.warning(f"⚠️ No UI callback set, cannot emit token: {token.symbol}")
             
-            logger.info(f"📊 Token {token.symbol} displayed for manual buying")
+            logger.info(f"📊 Token {token.symbol} displayed for manual buying (Age: {enriched_token.get('age_days', 0):.1f} days)")
             
             # Auto-buy logic
             if settings.auto_buy:

@@ -39,6 +39,9 @@ class WebSocketHandler:
     @staticmethod
     def emit_new_token(token_data: Dict[str, Any]):
         """Emit new token event to frontend"""
+        logger.info(f"📡 WebSocket: Emitting token to frontend: {token_data.get('symbol', 'Unknown')}")
+        logger.info(f"📋 WebSocket: Token data: {token_data}")
+        
         socketio.emit('new_token', {
             'mint': token_data.get('mint'),
             'symbol': token_data.get('symbol'),
@@ -49,7 +52,15 @@ class WebSocketHandler:
             'tokens_in_pool': token_data.get('tokens_in_pool'),
             'initial_buy': token_data.get('initial_buy'),
             'created_timestamp': token_data.get('created_timestamp'),
+            'liquidity': token_data.get('liquidity'),
+            'holders': token_data.get('holders'),
+            'age_days': token_data.get('age_days'),
+            'is_on_pump': token_data.get('is_on_pump'),
+            'pump_info': token_data.get('pump_info'),
+            'source': token_data.get('source', 'pumpportal')
         })
+        
+        logger.info(f"✅ WebSocket: Token emitted successfully")
     
     @staticmethod
     def emit_position_update(position_data: Dict[str, Any]):
@@ -192,7 +203,10 @@ def update_settings():
             'min_liquidity': float,
             'min_holders': int,
             'auto_buy': bool,
-            'auto_sell': bool
+            'auto_sell': bool,
+            'token_age_filter': str,
+            'custom_days': int,
+            'include_pump_tokens': bool
         }
         
         settings = {}
