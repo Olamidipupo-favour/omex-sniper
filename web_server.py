@@ -65,6 +65,16 @@ class WebSocketHandler:
     def emit_error(error_message: str):
         """Emit error event to frontend"""
         socketio.emit('error', {'message': error_message})
+    
+    @staticmethod
+    def emit_auto_buy_success(data: Dict[str, Any]):
+        """Emit auto-buy success event to frontend"""
+        socketio.emit('auto_buy_success', data)
+    
+    @staticmethod
+    def emit_auto_buy_error(data: Dict[str, Any]):
+        """Emit auto-buy error event to frontend"""
+        socketio.emit('auto_buy_error', data)
 
 # Set bot UI callback
 def handle_bot_event(event_type: str, data: Dict[str, Any]):
@@ -77,6 +87,10 @@ def handle_bot_event(event_type: str, data: Dict[str, Any]):
         WebSocketHandler.emit_transaction(data)
     elif event_type == 'error':
         WebSocketHandler.emit_error(data)
+    elif event_type == 'auto_buy_success':
+        WebSocketHandler.emit_auto_buy_success(data)
+    elif event_type == 'auto_buy_error':
+        WebSocketHandler.emit_auto_buy_error(data)
 
 bot.set_ui_callback(handle_bot_event)
 

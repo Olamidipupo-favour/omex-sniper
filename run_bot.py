@@ -27,7 +27,7 @@ def main():
         create_env_file()
     
     print("📡 Starting web server...")
-    print("🌐 Open your browser to: http://localhost:8080")
+    print("🌐 Open your browser to: http://localhost:8000")
     print("🛑 Press Ctrl+C to stop the bot")
     print("=" * 50)
     
@@ -36,7 +36,7 @@ def main():
         socketio.run(
             app,
             host='0.0.0.0',
-            port=8000,
+            port=8001,
             debug=False,
             allow_unsafe_werkzeug=True
         )

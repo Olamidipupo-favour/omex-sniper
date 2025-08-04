@@ -178,10 +178,47 @@ body {
 }
 
 .wallet-info {
-    padding: 16px;
-    background: rgba(0, 212, 255, 0.1);
-    border-radius: 12px;
-    border: 1px solid rgba(0, 212, 255, 0.2);
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 15px;
+    margin-top: 10px;
+}
+
+.wallet-details {
+    margin-bottom: 15px;
+}
+
+.wallet-address, .wallet-balance {
+    margin-bottom: 8px;
+    font-size: 14px;
+}
+
+.wallet-address strong, .wallet-balance strong {
+    color: var(--text-primary);
+    margin-right: 8px;
+}
+
+#disconnectWalletBtn {
+    background: var(--danger-color);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: background-color 0.2s;
+}
+
+#disconnectWalletBtn:hover {
+    background: #d32f2f;
+}
+
+#disconnectWalletBtn i {
+    font-size: 12px;
 }
 
 .wallet-storage-option {

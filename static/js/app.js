@@ -23,6 +23,7 @@ class SniperBotApp {
     setupEventListeners() {
         // Wallet connection
         document.getElementById('connectWalletBtn').addEventListener('click', () => this.connectWallet());
+        document.getElementById('disconnectWalletBtn').addEventListener('click', () => this.disconnectWallet());
         
         // Bot controls
         document.getElementById('startBtn').addEventListener('click', () => this.startBot());
@@ -87,6 +88,14 @@ class SniperBotApp {
                 this.handleError(error);
             });
             
+            this.socket.on('auto_buy_success', (data) => {
+                this.handleAutoBuySuccess(data);
+            });
+            
+            this.socket.on('auto_buy_error', (data) => {
+                this.handleAutoBuyError(data);
+            });
+            
         } catch (error) {
             console.error('WebSocket connection failed:', error);
             this.addLog('Failed to connect WebSocket', 'error');
@@ -139,6 +148,54 @@ class SniperBotApp {
         } catch (error) {
             console.error('Wallet connection error:', error);
             this.showToast('Connection failed', 'error');
+        } finally {
+            this.showLoading(false);
+        }
+    }
+    
+    async disconnectWallet() {
+        if (!this.walletConnected) {
+            this.showToast('No wallet connected', 'info');
+            return;
+        }
+        
+        this.showLoading(true);
+        
+        try {
+            const response = await fetch('/api/wallet/disconnect', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                this.walletConnected = false;
+                
+                // Show wallet form and hide wallet info
+                document.getElementById('walletForm').style.display = 'block';
+                document.getElementById('walletInfo').style.display = 'none';
+                
+                // Clear wallet display
+                document.getElementById('walletAddress').textContent = '-';
+                document.getElementById('walletBalance').textContent = '-';
+                document.getElementById('solBalance').textContent = '0.000';
+                
+                // Clear private key input
+                document.getElementById('privateKeyInput').value = '';
+                
+                this.showToast('Wallet disconnected successfully!', 'success');
+                this.addLog('Wallet disconnected', 'info');
+                
+                this.updateBotControls();
+            } else {
+                this.showToast(result.error || 'Failed to disconnect wallet', 'error');
+            }
+        } catch (error) {
+            console.error('Wallet disconnection error:', error);
+            this.showToast('Disconnection failed', 'error');
         } finally {
             this.showLoading(false);
         }
@@ -383,8 +440,49 @@ class SniperBotApp {
     }
     
     handleError(error) {
+        console.error('WebSocket error:', error);
         this.addLog(`Error: ${error}`, 'error');
-        this.showToast(error, 'error');
+    }
+    
+    handleBuyError(error) {
+        console.error('Buy error:', error);
+        let errorMessage = error.message || 'Buy failed';
+        
+        // Handle specific error types
+        if (error.type === 'buy_failed') {
+            if (errorMessage.includes('Insufficient SOL balance')) {
+                errorMessage = '❌ Insufficient SOL balance. Please add more SOL to your wallet.';
+            } else if (errorMessage.includes('insufficient_balance')) {
+                errorMessage = '❌ Insufficient balance for this transaction.';
+            }
+        }
+        
+        this.showToast(errorMessage, 'error');
+        this.addLog(`Buy failed: ${errorMessage}`, 'error');
+    }
+    
+    handleAutoBuySuccess(data) {
+        console.log('Auto-buy success:', data);
+        const message = `✅ Auto-buy successful: ${data.token_symbol} (${data.sol_amount} SOL)`;
+        this.showToast(message, 'success');
+        this.addLog(`Auto-buy: ${data.token_symbol} - ${data.sol_amount} SOL`, 'success');
+    }
+    
+    handleAutoBuyError(data) {
+        console.error('Auto-buy error:', data);
+        let errorMessage = data.message || 'Auto-buy failed';
+        
+        // Handle specific error types
+        if (data.error === 'insufficient_balance') {
+            errorMessage = `❌ Auto-buy failed: Insufficient balance for ${data.token_symbol}. Need ${data.required_amount} SOL, have ${data.available_balance} SOL.`;
+        } else if (data.error === 'buy_failed') {
+            errorMessage = `❌ Auto-buy failed for ${data.token_symbol}: Transaction failed`;
+        } else if (data.error === 'exception') {
+            errorMessage = `❌ Auto-buy error for ${data.token_symbol}: ${data.message}`;
+        }
+        
+        this.showToast(errorMessage, 'error');
+        this.addLog(`Auto-buy error: ${data.token_symbol} - ${errorMessage}`, 'error');
     }
     
     updateNewTokensTable() {
@@ -652,9 +750,9 @@ class SniperBotApp {
         // Load bot status from backend
         fetch('/api/status')
             .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    this.updateUIFromStatus(data.data);
+            .then(result => {
+                if (result.success) {
+                    this.updateUIFromStatus(result.data);
                 } else {
                     this.addLog('Failed to load bot status', 'error');
                 }

@@ -295,8 +295,88 @@ class SniperBot:
             
             logger.info(f"📊 Token {token.symbol} displayed for manual buying")
             
+            # Auto-buy logic
+            if settings.auto_buy:
+                await self._auto_buy_token(token)
+            
         except Exception as e:
             logger.error(f"❌ Error handling new token: {e}")
+    
+    async def _auto_buy_token(self, token: TokenInfo):
+        """Automatically buy a token when auto_buy is enabled"""
+        try:
+            settings = config_manager.config.bot_settings
+            
+            # Check if we already have a position for this token
+            if token.mint in self.positions and self.positions[token.mint].is_active:
+                logger.info(f"⏭️ Skipping auto-buy for {token.symbol} - already have position")
+                return
+            
+            # Check max positions limit
+            active_positions = len([p for p in self.positions.values() if p.is_active])
+            if active_positions >= settings.max_positions:
+                logger.info(f"⏭️ Skipping auto-buy for {token.symbol} - max positions reached ({active_positions}/{settings.max_positions})")
+                return
+            
+            # Check wallet balance
+            current_balance = self.get_wallet_balance_sync()
+            if current_balance < settings.sol_per_snipe:
+                error_msg = f"Insufficient balance for auto-buy: {current_balance:.4f} SOL available, {settings.sol_per_snipe} SOL needed"
+                logger.warning(f"⚠️ {error_msg}")
+                
+                # Notify frontend about the error
+                if self.ui_callback:
+                    self.ui_callback('auto_buy_error', {
+                        'token_symbol': token.symbol,
+                        'token_mint': token.mint,
+                        'error': 'insufficient_balance',
+                        'message': error_msg,
+                        'required_amount': settings.sol_per_snipe,
+                        'available_balance': current_balance
+                    })
+                return
+            
+            logger.info(f"🎯 Auto-buying {token.symbol} with {settings.sol_per_snipe} SOL...")
+            
+            # Execute the buy
+            success = await self.buy_token(token.mint, settings.sol_per_snipe)
+            
+            if success:
+                logger.info(f"✅ Auto-buy successful for {token.symbol}")
+                
+                # Notify frontend about successful auto-buy
+                if self.ui_callback:
+                    self.ui_callback('auto_buy_success', {
+                        'token_symbol': token.symbol,
+                        'token_mint': token.mint,
+                        'sol_amount': settings.sol_per_snipe,
+                        'timestamp': int(datetime.now().timestamp())
+                    })
+            else:
+                error_msg = f"Auto-buy failed for {token.symbol}"
+                logger.error(f"❌ {error_msg}")
+                
+                # Notify frontend about the error
+                if self.ui_callback:
+                    self.ui_callback('auto_buy_error', {
+                        'token_symbol': token.symbol,
+                        'token_mint': token.mint,
+                        'error': 'buy_failed',
+                        'message': error_msg
+                    })
+                
+        except Exception as e:
+            error_msg = f"Error during auto-buy for {token.symbol}: {e}"
+            logger.error(f"❌ {error_msg}")
+            
+            # Notify frontend about the error
+            if self.ui_callback:
+                self.ui_callback('auto_buy_error', {
+                    'token_symbol': token.symbol,
+                    'token_mint': token.mint,
+                    'error': 'exception',
+                    'message': error_msg
+                })
     
     async def buy_token(self, mint: str, sol_amount: float) -> bool:
         """Buy a token manually"""
