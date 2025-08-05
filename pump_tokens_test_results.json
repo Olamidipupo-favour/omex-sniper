@@ -1,0 +1,180 @@
+{
+  "total_time_seconds": 5.069041967391968,
+  "direct_api": {
+    "success": true,
+    "tokens_found": 2,
+    "tokens": [
+      {
+        "mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+        "symbol": "TREND",
+        "name": "Trending Token",
+        "created_timestamp": 1754329160,
+        "market_cap": 50000,
+        "price": 0.001,
+        "liquidity": 100.0,
+        "holders": 500,
+        "is_on_pump": true,
+        "source": "pump_trending"
+      },
+      {
+        "mint": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+        "symbol": "HOT",
+        "name": "Hot Token",
+        "created_timestamp": 1754307560,
+        "market_cap": 75000,
+        "price": 0.002,
+        "liquidity": 150.0,
+        "holders": 750,
+        "is_on_pump": true,
+        "source": "pump_trending"
+      }
+    ],
+    "error": null
+  },
+  "hybrid_pump_only": {
+    "success": true,
+    "tokens_found": 2,
+    "tokens": [
+      {
+        "mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+        "symbol": "TREND",
+        "name": "Trending Token",
+        "created_timestamp": 1754329162,
+        "market_cap": 50000,
+        "price": 0.001,
+        "liquidity": 100.0,
+        "holders": 500,
+        "is_on_pump": true,
+        "source": "pump_trending"
+      },
+      {
+        "mint": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+        "symbol": "HOT",
+        "name": "Hot Token",
+        "created_timestamp": 1754307562,
+        "market_cap": 75000,
+        "price": 0.002,
+        "liquidity": 150.0,
+        "holders": 750,
+        "is_on_pump": true,
+        "source": "pump_trending"
+      }
+    ],
+    "error": null
+  },
+  "individual_tokens": {
+    "success": true,
+    "tested_tokens": 2,
+    "results": [
+      {
+        "mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+        "symbol": "TREND",
+        "pump_info_found": false,
+        "pump_info": null
+      },
+      {
+        "mint": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+        "symbol": "HOT",
+        "pump_info_found": false,
+        "pump_info": null
+      }
+    ]
+  },
+  "token_filtering": {
+    "success": true,
+    "original_count": 2,
+    "filter_results": {
+      "new_only": {
+        "count": 0,
+        "sample": []
+      },
+      "last_1_day": {
+        "count": 2,
+        "sample": [
+          {
+            "mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            "symbol": "TREND",
+            "name": "Trending Token",
+            "created_timestamp": 1754329160,
+            "market_cap": 50000,
+            "price": 0.001,
+            "liquidity": 100.0,
+            "holders": 500,
+            "is_on_pump": true,
+            "source": "pump_trending"
+          },
+          {
+            "mint": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+            "symbol": "HOT",
+            "name": "Hot Token",
+            "created_timestamp": 1754307560,
+            "market_cap": 75000,
+            "price": 0.002,
+            "liquidity": 150.0,
+            "holders": 750,
+            "is_on_pump": true,
+            "source": "pump_trending"
+          }
+        ]
+      },
+      "last_3_days": {
+        "count": 2,
+        "sample": [
+          {
+            "mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            "symbol": "TREND",
+            "name": "Trending Token",
+            "created_timestamp": 1754329160,
+            "market_cap": 50000,
+            "price": 0.001,
+            "liquidity": 100.0,
+            "holders": 500,
+            "is_on_pump": true,
+            "source": "pump_trending"
+          },
+          {
+            "mint": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+            "symbol": "HOT",
+            "name": "Hot Token",
+            "created_timestamp": 1754307560,
+            "market_cap": 75000,
+            "price": 0.002,
+            "liquidity": 150.0,
+            "holders": 750,
+            "is_on_pump": true,
+            "source": "pump_trending"
+          }
+        ]
+      },
+      "last_7_days": {
+        "count": 2,
+        "sample": [
+          {
+            "mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            "symbol": "TREND",
+            "name": "Trending Token",
+            "created_timestamp": 1754329160,
+            "market_cap": 50000,
+            "price": 0.001,
+            "liquidity": 100.0,
+            "holders": 500,
+            "is_on_pump": true,
+            "source": "pump_trending"
+          },
+          {
+            "mint": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+            "symbol": "HOT",
+            "name": "Hot Token",
+            "created_timestamp": 1754307560,
+            "market_cap": 75000,
+            "price": 0.002,
+            "liquidity": 150.0,
+            "holders": 750,
+            "is_on_pump": true,
+            "source": "pump_trending"
+          }
+        ]
+      }
+    }
+  }
+}

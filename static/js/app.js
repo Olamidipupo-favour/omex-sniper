@@ -217,6 +217,17 @@ class SniperBotApp {
             return;
         }
         
+        // Refresh status from backend before attempting to start
+        try {
+            const statusResponse = await fetch('/api/status');
+            const statusResult = await statusResponse.json();
+            if (statusResult.success) {
+                this.updateUIFromStatus(statusResult.data);
+            }
+        } catch (error) {
+            console.error('Error refreshing status:', error);
+        }
+        
         if (this.botRunning) {
             this.showToast('Bot is already running', 'info');
             return;
@@ -241,6 +252,8 @@ class SniperBotApp {
                 this.addLog('Bot monitoring started', 'success');
             } else {
                 this.showToast(result.error || 'Failed to start bot', 'error');
+                // Refresh status again to sync with backend
+                this.loadInitialData();
             }
         } catch (error) {
             console.error('Error starting bot:', error);
@@ -275,6 +288,8 @@ class SniperBotApp {
                 this.addLog('Bot monitoring stopped', 'info');
             } else {
                 this.showToast(result.error || 'Failed to stop bot', 'error');
+                // Refresh status to sync with backend
+                this.loadInitialData();
             }
         } catch (error) {
             console.error('Error stopping bot:', error);

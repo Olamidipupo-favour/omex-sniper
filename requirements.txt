@@ -1,4 +1,4 @@
-solana
+solana==0.30.2
 websockets
 websocket-client
 aiohttp
@@ -12,4 +12,5 @@ python-dotenv
 pydantic
 flask
 flask-socketio==5.3.6
-solders
+solders==0.18.1
+httpx==0.23.3

@@ -229,14 +229,17 @@ class SniperBot:
                         mint=token_data.get('mint', ''),
                         symbol=token_data.get('symbol', ''),
                         name=token_data.get('name', ''),
+                        description=token_data.get('description', ''),
+                        image=token_data.get('image_uri', ''),
+                        created_timestamp=token_data.get('created_timestamp', int(time.time())),
+                        usd_market_cap=token_data.get('usd_market_cap', 0),
                         market_cap=token_data.get('market_cap', 0),
                         price=token_data.get('price', 0),
                         sol_in_pool=token_data.get('liquidity', 0),
                         tokens_in_pool=0,
                         initial_buy=0,
                         liquidity=token_data.get('liquidity', 0),
-                        holders=token_data.get('holders', 0),
-                        created_timestamp=token_data.get('created_timestamp', int(time.time()))
+                        holders=token_data.get('holders', 0)
                     )
                     
                     logger.info(f"🔄 Processing historical token: {token.symbol} ({token.mint})")
