@@ -7,13 +7,19 @@ import asyncio
 import aiohttp
 import logging
 import time
-from typing import Dict, List, Optional, Set
+import ssl
+from typing import Any, Dict, List, Optional, Set
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from solders.pubkey import Pubkey
 from solana.rpc.async_api import AsyncClient
 
 logger = logging.getLogger(__name__)
+
+# SSL context configuration for macOS compatibility
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
 
 @dataclass
 class TokenAgeInfo:
@@ -50,6 +56,11 @@ class TokenFilterService:
         
         # Initialize Pump.fun Helius endpoint availability (will be tested when needed)
         self.pump_helius_available = False
+        
+        # SOL price variables (like in pump_fun_monitor.py)
+        self.sol_price_usd = 100.0  # Default fallback price
+        self.last_sol_price_update = 0
+        self.sol_price_cache_duration = 300  # 5 minutes
     
     async def _test_pump_helius_endpoint(self):
         """Test if Pump.fun Helius endpoint is available"""
@@ -406,6 +417,9 @@ class TokenFilterService:
         try:
             logger.info(f"🔍 Getting Pump.fun tokens for last {days} days...")
             
+            # Get current SOL price for market cap conversion
+            sol_price_usd = await self.get_sol_price()
+            
             # Calculate timestamp threshold
             current_time = int(time.time() * 1000)  # Convert to milliseconds
             time_threshold = current_time - (days * 24 * 3600 * 1000)  # Convert days to milliseconds
@@ -442,15 +456,27 @@ class TokenFilterService:
                                             # Token is too old, skip
                                             continue
                                         
+                                        # Extract bonding curve data (like in pump_fun_monitor.py)
+                                        v_sol_in_bonding_curve = token.get('virtual_sol_reserves', 0) / 1e9 if token.get('virtual_sol_reserves') else 0  # Convert from lamports to SOL
+                                        v_tokens_in_bonding_curve = token.get('virtual_token_reserves', 0) / 1e6 if token.get('virtual_token_reserves') else 0  # Convert from raw token amount
+                                        
+                                        # Calculate price per token (like in pump_fun_monitor.py)
+                                        price_per_token_sol = v_sol_in_bonding_curve / v_tokens_in_bonding_curve if v_tokens_in_bonding_curve > 0 else 0.0
+                                        price_per_token_usd = price_per_token_sol * sol_price_usd
+                                        
+                                        # Get market cap in SOL and convert to USD
+                                        market_cap_sol = token.get('market_cap', 0)
+                                        market_cap_usd = market_cap_sol * sol_price_usd
+                                        
                                         # Extract and convert the data
                                         converted_token = {
                                             'mint': token.get('mint', ''),
                                             'symbol': token.get('symbol', ''),
                                             'name': token.get('name', ''),
                                             'created_timestamp': created_timestamp,
-                                            'market_cap': token.get('market_cap', 0),
-                                            'price': token.get('price', 0),
-                                            'liquidity': token.get('virtual_sol_reserves', 0) / 1e9 if token.get('virtual_sol_reserves') else 0,  # Convert from lamports to SOL
+                                            'market_cap': market_cap_usd,  # Use USD market cap
+                                            'price': price_per_token_usd,  # Use USD price
+                                            'liquidity': v_sol_in_bonding_curve,  # SOL in bonding curve
                                             'holders': token.get('num_participants', 0) if token.get('num_participants') else 0,
                                             'is_on_pump': True,  # These are definitely on Pump.fun
                                             'source': 'pump_api',
@@ -459,14 +485,18 @@ class TokenFilterService:
                                             'twitter': token.get('twitter', ''),
                                             'telegram': token.get('telegram', ''),
                                             'website': token.get('website', ''),
-                                            'usd_market_cap': token.get('usd_market_cap', 0),
+                                            'usd_market_cap': market_cap_usd,
                                             'is_currently_live': token.get('is_currently_live', False),
                                             'reply_count': token.get('reply_count', 0),
                                             'nsfw': token.get('nsfw', False),
                                             'bonding_curve': token.get('bonding_curve', ''),
                                             'creator': token.get('creator', ''),
                                             'total_supply': token.get('total_supply', 0),
-                                            'virtual_token_reserves': token.get('virtual_token_reserves', 0)
+                                            'virtual_token_reserves': token.get('virtual_token_reserves', 0),
+                                            # Add bonding curve data like in pump_fun_monitor.py
+                                            'sol_in_pool': v_sol_in_bonding_curve,
+                                            'tokens_in_pool': v_tokens_in_bonding_curve,
+                                            'initial_buy': token.get('initial_buy', 0)
                                         }
                                         
                                         # Calculate age in days
@@ -543,46 +573,57 @@ class TokenFilterService:
             return []
     
     async def _get_known_pump_tokens(self) -> List[Dict]:
-        """Get known tokens that are likely to be on Pump.fun"""
+        """Get known tokens that are verified to be on Pump.fun"""
         try:
-            # These are some tokens that are commonly traded on Pump.fun
-            # In a real implementation, you'd get this from a database or API
+            # Get current SOL price for market cap conversion
+            sol_price_usd = await self.get_sol_price()
+            
+            # List of known tokens that are typically on Pump.fun
             known_tokens = [
                 {
                     'mint': 'So11111111111111111111111111111111111111112',  # WSOL
                     'symbol': 'WSOL',
                     'name': 'Wrapped SOL',
                     'created_timestamp': int(time.time()) - (24 * 3600),  # 1 day ago
-                    'market_cap': 1000000,
-                    'price': 1.0,
+                    'market_cap': 1000 * sol_price_usd,  # 1000 SOL converted to USD
+                    'price': 1.0 * sol_price_usd,  # 1 SOL converted to USD
                     'liquidity': 1000.0,
                     'holders': 10000,
                     'is_on_pump': True,
-                    'source': 'pump_known'
+                    'source': 'pump_known',
+                    'sol_in_pool': 1000.0,
+                    'tokens_in_pool': 1000.0,
+                    'initial_buy': 0
                 },
                 {
                     'mint': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  # USDC
                     'symbol': 'USDC',
                     'name': 'USD Coin',
                     'created_timestamp': int(time.time()) - (2 * 24 * 3600),  # 2 days ago
-                    'market_cap': 5000000,
-                    'price': 1.0,
+                    'market_cap': 5000 * sol_price_usd,  # 5000 SOL converted to USD
+                    'price': 1.0,  # USDC is pegged to $1
                     'liquidity': 2000.0,
                     'holders': 50000,
                     'is_on_pump': True,
-                    'source': 'pump_known'
+                    'source': 'pump_known',
+                    'sol_in_pool': 2000.0,
+                    'tokens_in_pool': 2000.0,
+                    'initial_buy': 0
                 },
                 {
                     'mint': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',  # USDT
                     'symbol': 'USDT',
                     'name': 'Tether USD',
                     'created_timestamp': int(time.time()) - (3 * 24 * 3600),  # 3 days ago
-                    'market_cap': 3000000,
-                    'price': 1.0,
+                    'market_cap': 3000 * sol_price_usd,  # 3000 SOL converted to USD
+                    'price': 1.0,  # USDT is pegged to $1
                     'liquidity': 1500.0,
                     'holders': 30000,
                     'is_on_pump': True,
-                    'source': 'pump_known'
+                    'source': 'pump_known',
+                    'sol_in_pool': 1500.0,
+                    'tokens_in_pool': 1500.0,
+                    'initial_buy': 0
                 }
             ]
             
@@ -611,6 +652,9 @@ class TokenFilterService:
     async def _get_trending_pump_tokens(self) -> List[Dict]:
         """Get trending tokens from Pump.fun - placeholder for now"""
         try:
+            # Get current SOL price for market cap conversion
+            sol_price_usd = await self.get_sol_price()
+            
             # This is a placeholder - in a real implementation, you'd:
             # 1. Scrape Pump.fun's trending page
             # 2. Use Pump.fun's WebSocket API
@@ -623,24 +667,30 @@ class TokenFilterService:
                     'symbol': 'TREND',
                     'name': 'Trending Token',
                     'created_timestamp': int(time.time()) - (6 * 3600),  # 6 hours ago
-                    'market_cap': 50000,
-                    'price': 0.001,
+                    'market_cap': 50 * sol_price_usd,  # 50 SOL converted to USD
+                    'price': 0.001 * sol_price_usd,  # 0.001 SOL converted to USD
                     'liquidity': 100.0,
                     'holders': 500,
                     'is_on_pump': True,
-                    'source': 'pump_trending'
+                    'source': 'pump_trending',
+                    'sol_in_pool': 100.0,
+                    'tokens_in_pool': 100000.0,  # More tokens = lower price
+                    'initial_buy': 0
                 },
                 {
                     'mint': '9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM',  # Another sample
                     'symbol': 'HOT',
                     'name': 'Hot Token',
                     'created_timestamp': int(time.time()) - (12 * 3600),  # 12 hours ago
-                    'market_cap': 75000,
-                    'price': 0.002,
+                    'market_cap': 75 * sol_price_usd,  # 75 SOL converted to USD
+                    'price': 0.002 * sol_price_usd,  # 0.002 SOL converted to USD
                     'liquidity': 150.0,
                     'holders': 750,
                     'is_on_pump': True,
-                    'source': 'pump_trending'
+                    'source': 'pump_trending',
+                    'sol_in_pool': 150.0,
+                    'tokens_in_pool': 75000.0,  # More tokens = lower price
+                    'initial_buy': 0
                 }
             ]
             
@@ -757,6 +807,9 @@ class TokenFilterService:
         try:
             logger.info(f"🔍 Simple: Getting sample tokens for last {days} days...")
             
+            # Get current SOL price for market cap conversion
+            sol_price_usd = await self.get_sol_price()
+            
             # For now, return some sample tokens to test the system
             # In a real implementation, you'd query a token database or use a different API
             sample_tokens = [
@@ -765,24 +818,30 @@ class TokenFilterService:
                     'symbol': 'WSOL',
                     'name': 'Wrapped SOL',
                     'created_timestamp': int(time.time()) - (3 * 24 * 3600),  # 3 days ago
-                    'market_cap': 1000000,
-                    'price': 1.0,
+                    'market_cap': 1000 * sol_price_usd,  # 1000 SOL converted to USD
+                    'price': 1.0 * sol_price_usd,  # 1 SOL converted to USD
                     'liquidity': 1000.0,
                     'holders': 10000,
                     'is_on_pump': False,
-                    'source': 'sample'
+                    'source': 'sample',
+                    'sol_in_pool': 1000.0,
+                    'tokens_in_pool': 1000.0,
+                    'initial_buy': 0
                 },
                 {
                     'mint': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  # USDC
                     'symbol': 'USDC',
                     'name': 'USD Coin',
                     'created_timestamp': int(time.time()) - (5 * 24 * 3600),  # 5 days ago
-                    'market_cap': 5000000,
-                    'price': 1.0,
+                    'market_cap': 5000 * sol_price_usd,  # 5000 SOL converted to USD
+                    'price': 1.0,  # USDC is pegged to $1
                     'liquidity': 2000.0,
                     'holders': 50000,
                     'is_on_pump': False,
-                    'source': 'sample'
+                    'source': 'sample',
+                    'sol_in_pool': 2000.0,
+                    'tokens_in_pool': 2000.0,
+                    'initial_buy': 0
                 }
             ]
             
@@ -959,3 +1018,154 @@ class TokenFilterService:
             "custom_days": f"Tokens created in the last {custom_days} days"
         }
         return descriptions.get(filter_type, "Unknown filter") 
+
+    async def get_sol_price(self) -> float:
+        """Fetch real-time SOL price from Pump.Fun API"""
+        current_time = datetime.now().timestamp()
+        
+        # Return cached price if it's still fresh
+        if current_time - self.last_sol_price_update < self.sol_price_cache_duration:
+            return self.sol_price_usd
+        
+        try:
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                async with session.get('https://frontend-api-v3.pump.fun/sol-price') as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        self.sol_price_usd = data.get('solPrice', 100.0)
+                        self.last_sol_price_update = current_time
+                        logger.info(f"📈 Updated SOL price: ${self.sol_price_usd:.2f}")
+                        return self.sol_price_usd
+                    else:
+                        logger.warning(f"Failed to fetch SOL price: HTTP {response.status}")
+                        return self.sol_price_usd
+        except Exception as e:
+            logger.warning(f"Error fetching SOL price: {e}")
+            return self.sol_price_usd
+    
+
+    async def get_token_holders(self, mint_address: str) -> Optional[Dict[str, Any]]:
+        """Get token holder information from SolanaTracker API"""
+        try:
+            # SolanaTracker API endpoint for holder data
+            url = f"https://data.solanatracker.io/tokens/{mint_address}/holders?token={mint_address}"
+            headers = {
+                "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"✅ Fetched holder data for {mint_address}")
+                        return data
+                    else:
+                        logger.error(f"❌ Failed to fetch holder data: {response.status}")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"❌ Error fetching holder data: {e}")
+            return None
+        
+    async def get_token_holders_count(self, mint_address: str) -> Optional[int]:
+        """Get the number of holders for a token"""
+        try:
+            holder_data = await self.get_token_holders(mint_address)
+            if holder_data and 'total' in holder_data:
+                count = holder_data['total']
+                logger.info(f"📊 Token {mint_address} has {count} holders")
+                return int(count)
+            elif holder_data and 'holders' in holder_data:
+                # If total not available, count the holders array
+                count = len(holder_data['holders'])
+                logger.info(f"📊 Token {mint_address} has {count} holders (from array)")
+                return count
+            else:
+                logger.warning(f"⚠️ No holder count available for {mint_address}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ Error getting holder count: {e}")
+            return None
+        
+    # async def get_token_holders_count(self, mint: str) -> int:
+    #     """Get the number of holders for a token using SolanaTracker API"""
+    #     try:
+    #         url = f"https://data.solanatracker.io/tokens/{mint}/holders?token={mint}"
+    #         headers = {
+    #             "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
+    #         }
+            
+    #         logger.info(f"🔍 Fetching holders for {mint} from SolanaTracker")
+            
+    #         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+    #             async with session.get(url, headers=headers, timeout=10) as response:
+    #                 logger.info(f"📡 Response status: {response.status}")
+                    
+    #                 if response.status == 200:
+    #                     data = await response.json()
+    #                     logger.info(f"📋 SolanaTracker response for {mint}: {data}")
+                        
+    #                     # Try to get total count from response
+    #                     if 'total' in data:
+    #                         holders_count = int(data['total'])
+    #                         logger.info(f"📊 Token {mint}: Found {holders_count} holders (from total)")
+    #                         return holders_count
+    #                     elif 'holders' in data:
+    #                         # If total not available, count the holders array
+    #                         holders_count = len(data['holders'])
+    #                         logger.info(f"📊 Token {mint}: Found {holders_count} holders (from array)")
+    #                         return holders_count
+    #                     else:
+    #                         logger.warning(f"⚠️ No holder data found for {mint}")
+    #                         return 0
+    #                 else:
+    #                     # Try to get error response body
+    #                     try:
+    #                         error_body = await response.text()
+    #                         logger.error(f"❌ HTTP {response.status} error for {mint}: {error_body}")
+    #                     except:
+    #                         logger.error(f"❌ HTTP {response.status} error for {mint}: Could not read error body")
+                        
+    #                     logger.warning(f"⚠️ Failed to get holders for {mint}: HTTP {response.status}")
+    #                     return 0
+    #     except Exception as e:
+    #         logger.error(f"❌ Exception getting holders for {mint}: {e}")
+    #         import traceback
+    #         logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    #         return 0
+    
+    async def update_token_holders_and_filter(self, tokens: List[Dict], min_liquidity: float = 100.0, min_holders: int = 10) -> List[Dict]:
+        """Update holders count for tokens and apply filtering based on settings"""
+        try:
+            logger.info(f"🔍 Updating holders and filtering {len(tokens)} tokens...")
+            logger.info(f"📊 Filter criteria: min_liquidity={min_liquidity} SOL, min_holders={min_holders}")
+            
+            filtered_tokens = []
+            
+            for token in tokens:
+                mint = token.get('mint', '')
+                if not mint:
+                    continue
+                
+                # Get current holders count from Pump.fun API
+                holders_count = await self.get_token_holders_count(mint)
+                
+                # Update the token with real holders count
+                token['holders'] = holders_count
+                
+                # Get liquidity (should already be in SOL)
+                liquidity = token.get('liquidity', 0.0)
+                
+                # Apply filtering
+                if liquidity >= min_liquidity and holders_count >= min_holders:
+                    filtered_tokens.append(token)
+                    logger.debug(f"✅ Token {token.get('symbol', 'Unknown')} passed filter: liquidity={liquidity:.2f} SOL, holders={holders_count}")
+                else:
+                    logger.debug(f"❌ Token {token.get('symbol', 'Unknown')} failed filter: liquidity={liquidity:.2f} SOL, holders={holders_count}")
+            
+            logger.info(f"📊 Filtered {len(tokens)} tokens to {len(filtered_tokens)} based on criteria")
+            return filtered_tokens
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating holders and filtering: {e}")
+            return tokens  # Return original tokens if there's an error 

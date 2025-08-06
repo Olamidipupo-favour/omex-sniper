@@ -84,11 +84,25 @@ class WebSocketHandler:
     
     @staticmethod
     def emit_auto_buy_error(data: Dict[str, Any]):
-        """Emit auto-buy error event to frontend"""
+        """Emit auto buy error event"""
         socketio.emit('auto_buy_error', data)
+    
+    @staticmethod
+    def emit_transaction_update(data: Dict[str, Any]):
+        """Emit transaction update event"""
+        socketio.emit('transaction_update', data)
+    
+    @staticmethod
+    def emit_price_update(data: Dict[str, Any]):
+        """Emit price update event"""
+        socketio.emit('price_update', data)
+    
+    @staticmethod
+    def emit_trade_update(data: Dict[str, Any]):
+        """Emit trade update event"""
+        socketio.emit('trade_update', data)
 
-# Set bot UI callback
-def handle_bot_event(event_type: str, data: Dict[str, Any]):
+async def handle_bot_event(event_type: str, data: Dict[str, Any]):
     """Handle bot events for WebSocket emission"""
     if event_type == 'new_token':
         WebSocketHandler.emit_new_token(data)
@@ -96,14 +110,37 @@ def handle_bot_event(event_type: str, data: Dict[str, Any]):
         WebSocketHandler.emit_position_update(data)
     elif event_type == 'transaction':
         WebSocketHandler.emit_transaction(data)
+    elif event_type == 'transaction_update':
+        WebSocketHandler.emit_transaction_update(data)
+    elif event_type == 'price_update':
+        WebSocketHandler.emit_price_update(data)
+    elif event_type == 'trade_update':
+        WebSocketHandler.emit_trade_update(data)
     elif event_type == 'error':
         WebSocketHandler.emit_error(data)
     elif event_type == 'auto_buy_success':
         WebSocketHandler.emit_auto_buy_success(data)
     elif event_type == 'auto_buy_error':
         WebSocketHandler.emit_auto_buy_error(data)
+    else:
+        logger.warning(f"⚠️ Unknown event type: {event_type}")
 
-bot.set_ui_callback(handle_bot_event)
+def handle_bot_event_sync(event_type: str, data: Dict[str, Any]):
+    """Synchronous wrapper for bot event handling"""
+    import asyncio
+    try:
+        # Get the current event loop or create a new one
+        try:
+            loop = asyncio.get_running_loop()
+            # If we're in an async context, create a task
+            asyncio.create_task(handle_bot_event(event_type, data))
+        except RuntimeError:
+            # No running loop, run in new event loop
+            asyncio.run(handle_bot_event(event_type, data))
+    except Exception as e:
+        logger.error(f"❌ Error handling bot event {event_type}: {e}")
+
+bot.set_ui_callback(handle_bot_event_sync)
 
 # Routes
 @app.route('/')
@@ -206,7 +243,8 @@ def update_settings():
             'auto_sell': bool,
             'token_age_filter': str,
             'custom_days': int,
-            'include_pump_tokens': bool
+            'include_pump_tokens': bool,
+            'transaction_type': str
         }
         
         settings = {}
@@ -305,6 +343,10 @@ def manual_buy():
         mint = data.get('mint')
         amount = data.get('amount', config_manager.config.bot_settings.sol_per_snipe)
         
+        # Debug logging
+        logger.info(f"🔍 Manual buy request - mint: {mint}, amount: {amount}, type: {type(amount)}")
+        logger.info(f"🔍 Full request data: {data}")
+        
         if not mint:
             return jsonify({
                 'success': False,
@@ -365,6 +407,62 @@ def manual_sell():
         
     except Exception as e:
         logger.error(f"Error executing sell: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/positions', methods=['GET'])
+def get_positions():
+    """Get wallet positions"""
+    try:
+        # Execute in async context
+        async def fetch_positions():
+            return await bot.fetch_wallet_positions()
+        
+        # Run in the bot's event loop if it exists
+        if loop and not loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(fetch_positions(), loop)
+            positions = future.result(timeout=30)
+        else:
+            positions = asyncio.run(fetch_positions())
+        
+        return jsonify({
+            'success': True,
+            'positions': positions
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching positions: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/transactions', methods=['GET'])
+def get_transactions():
+    """Get wallet transaction history"""
+    try:
+        limit = request.args.get('limit', 50, type=int)
+        
+        # Execute in async context
+        async def fetch_transactions():
+            return await bot.fetch_wallet_transactions(limit)
+        
+        # Run in the bot's event loop if it exists
+        if loop and not loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(fetch_transactions(), loop)
+            transactions = future.result(timeout=30)
+        else:
+            transactions = asyncio.run(fetch_transactions())
+        
+        return jsonify({
+            'success': True,
+            'transactions': transactions
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching transactions: {e}")
         return jsonify({
             'success': False,
             'error': str(e)

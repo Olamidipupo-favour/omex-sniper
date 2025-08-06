@@ -7,7 +7,7 @@ Integrates PumpPortal monitoring with Helius RPC trading
 import asyncio
 import logging
 import base58
-from typing import Optional, Callable
+from typing import Optional, Callable, Dict, List, Any
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solana.rpc.async_api import AsyncClient
@@ -16,9 +16,10 @@ from datetime import datetime
 import time
 
 from config import config_manager, HELIUS_RPC_URL
-from pump_fun_monitor import PumpPortalMonitor, TokenInfo
+from pump_fun_monitor import PumpFunMonitor, TokenInfo
 from pumpportal_trader import PumpPortalTrader
 from token_filter_service import TokenFilterService
+from helius_api import HeliusAPI
 
 # Configure logging
 logging.basicConfig(
@@ -54,22 +55,29 @@ class SniperBot:
     """Main sniper bot class"""
     
     def __init__(self):
+        """Initialize the sniper bot"""
         self.keypair = None
-        self.monitor = PumpPortalMonitor()
-        self.trader = PumpPortalTrader()  # Initialize without keypair initially
-        self.token_filter = TokenFilterService(helius_rpc_url=HELIUS_RPC_URL)  # Initialize with Helius RPC
-        self.positions = {}
-        self.monitoring_task = None
-        self.position_monitoring_task = None
-        self.buy_activity_monitoring_task = None  # New task for monitoring buy activity
-        self.ui_callback = None
+        self.trader = PumpPortalTrader()
+        self.monitor = PumpFunMonitor()
+        self.token_filter = TokenFilterService(helius_rpc_url=HELIUS_RPC_URL)
+        self.positions: Dict[str, Position] = {}
+        self.ui_callback: Optional[Callable] = None
+        self.buy_activity_monitoring_task = None
         
-        # Set up monitor callbacks
-        self.monitor.set_new_token_callback(self._handle_new_token)
-        self.monitor.set_trade_callback(self._handle_trade_activity)  # New callback for trade monitoring
+        # Initialize Helius API
+        self.helius_api = HeliusAPI()
         
-        # Check if wallet is already configured
+        # Store trade history for analysis
+        self.trade_history: List[Dict[str, Any]] = []
+        
+        # Check for existing wallet on startup
         self._check_wallet_on_startup()
+        
+        # Set up trade monitoring callback
+        self.monitor.set_trade_callback(self._handle_pumpportal_trade)
+        
+        # Set up new token callback
+        self.monitor.set_new_token_callback(self._handle_new_token)
     
     def _check_wallet_on_startup(self):
         """Check if wallet is configured and connect automatically"""
@@ -181,6 +189,7 @@ class SniperBot:
                 'token_age_filter': config_manager.config.bot_settings.token_age_filter,
                 'custom_days': config_manager.config.bot_settings.custom_days,
                 'include_pump_tokens': config_manager.config.bot_settings.include_pump_tokens,
+                'transaction_type': config_manager.config.bot_settings.transaction_type,
             }
         }
     
@@ -257,52 +266,91 @@ class SniperBot:
             logger.error(f"❌ Error loading historical tokens: {e}")
     
     async def start_monitoring(self) -> bool:
-        """Start the monitoring system"""
+        """Start monitoring for new tokens and trading opportunities"""
         try:
-            if not config_manager.config.bot_state.wallet_connected:
-                logger.error("❌ Cannot start monitoring: No wallet connected")
-                return False
+            logger.info("🚀 Starting sniper bot monitoring...")
             
-            logger.info("🚀 Starting monitoring system...")
+            # Update bot state
             config_manager.update_bot_state(is_running=True)
             
-            # Update wallet balance now that we have an event loop
-            await self._update_wallet_balance()
+            # Start PumpPortal WebSocket monitoring
+            await self._start_pumpportal_monitoring()
             
-            settings = config_manager.config.bot_settings
+            # Start the main monitoring loop
+            monitoring_task = asyncio.create_task(self._monitor_positions())
             
-            # Check if we're using historical filter or new-only filter
-            if settings.token_age_filter == "new_only":
-                # For "new_only" - start real-time monitoring
-                logger.info("📡 Starting real-time token monitoring...")
-                self.monitoring_task = asyncio.create_task(self.monitor.start_monitoring())
-            else:
-                # For historical filters - only load historical tokens, no real-time monitoring
-                logger.info(f"📚 Loading historical tokens for filter: {settings.token_age_filter}")
-                await self._load_historical_tokens()
-                # Don't start real-time monitoring for historical filters
-            
-            # Start position monitoring (always needed for active positions)
-            self.position_monitoring_task = asyncio.create_task(self._monitor_positions())
-            
-            # Start buy activity monitoring (always needed for active positions)
+            # Start buy activity monitoring
             self.buy_activity_monitoring_task = asyncio.create_task(self._monitor_buy_activity())
             
-            logger.info("✅ Monitoring system started")
+            # Start price monitoring
+            await self.start_price_monitoring()
+            
+            logger.info("✅ Monitoring started successfully")
             return True
             
         except Exception as e:
             logger.error(f"❌ Error starting monitoring: {e}")
             config_manager.update_bot_state(is_running=False)
             return False
+
+    async def _start_pumpportal_monitoring(self):
+        """Start PumpPortal WebSocket monitoring using existing pump_fun_monitor.py"""
+        try:
+            logger.info("🔌 Starting PumpPortal WebSocket monitoring...")
+            
+            # Prepare initial subscriptions
+            initial_subscriptions = {
+                'subscribe_new_tokens': True  # Always subscribe to new tokens
+            }
+            
+            # Add account trades subscription if wallet is connected
+            if self.keypair:
+                wallet_address = str(self.keypair.pubkey())
+                initial_subscriptions['account_addresses'] = [wallet_address]
+                logger.info(f"📡 Will subscribe to account trades: {wallet_address}")
+            
+            # Start the existing PumpFunMonitor with initial subscriptions
+            await self.monitor.start_monitoring(initial_subscriptions)
+            
+            logger.info("✅ PumpPortal monitoring started using existing pump_fun_monitor.py")
+            logger.info("🔍 Listening for new tokens and trades with single WebSocket connection...")
+            
+        except Exception as e:
+            logger.error(f"❌ Error starting PumpPortal monitoring: {e}")
+    
+    async def _unsubscribe_from_all_monitoring(self):
+        """Unsubscribe from specific monitoring but keep account trades active"""
+        try:
+            # Unsubscribe from new token creation
+            await self.monitor.unsubscribe_new_tokens()
+            logger.info("📤 Unsubscribed from new token creation")
+            
+            # Unsubscribe from token trades for all active positions
+            active_tokens = [mint for mint, pos in self.positions.items() if pos.is_active]
+            if active_tokens:
+                await self.monitor.unsubscribe_token_trades(active_tokens)
+                logger.info(f"📤 Unsubscribed from token trades: {active_tokens}")
+            
+            # Keep account trades subscription active (don't unsubscribe)
+            logger.info("📡 Keeping account trades subscription active")
+                
+        except Exception as e:
+            logger.error(f"❌ Error unsubscribing from monitoring: {e}")
     
     def stop_monitoring(self) -> bool:
-        """Stop the monitoring system"""
+        """Stop the monitoring system but keep WebSocket connection alive"""
         try:
-            logger.info("🛑 Stopping monitoring system...")
+            logger.info("🛑 Stopping monitoring system (keeping WebSocket alive)...")
             config_manager.update_bot_state(is_running=False)
             
-            # Stop monitor
+            # Unsubscribe from specific tokens/accounts but don't close WebSocket
+            try:
+                # Use synchronous unsubscription method
+                self.monitor.unsubscribe_from_monitoring_sync()
+            except Exception as e:
+                logger.warning(f"⚠️ Error unsubscribing from monitoring: {e}")
+            
+            # Stop monitor (but keep WebSocket alive)
             try:
                 self.monitor.stop_monitoring()
             except Exception as e:
@@ -310,34 +358,65 @@ class SniperBot:
             
             # Cancel tasks with error handling
             try:
-                if self.monitoring_task and not self.monitoring_task.done():
-                    self.monitoring_task.cancel()
-            except Exception as e:
-                logger.warning(f"⚠️ Error canceling monitoring task: {e}")
-            
-            try:
-                if self.position_monitoring_task and not self.position_monitoring_task.done():
-                    self.position_monitoring_task.cancel()
-            except Exception as e:
-                logger.warning(f"⚠️ Error canceling position monitoring task: {e}")
-            
-            try:
                 if self.buy_activity_monitoring_task and not self.buy_activity_monitoring_task.done():
                     self.buy_activity_monitoring_task.cancel()
             except Exception as e:
                 logger.warning(f"⚠️ Error canceling buy activity monitoring task: {e}")
             
-            logger.info("✅ Monitoring system stopped")
+            # Cancel all price monitoring tasks
+            try:
+                if hasattr(self, 'price_monitoring_tasks'):
+                    for mint, task in self.price_monitoring_tasks.items():
+                        if not task.done():
+                            task.cancel()
+                            logger.info(f"🛑 Cancelled price monitoring for {mint}")
+                    self.price_monitoring_tasks.clear()
+            except Exception as e:
+                logger.warning(f"⚠️ Error canceling price monitoring tasks: {e}")
+            
+            logger.info("✅ Monitoring system stopped (WebSocket kept alive)")
             return True
             
         except Exception as e:
             logger.error(f"❌ Error stopping monitoring: {e}")
             return False
     
+    def shutdown(self) -> bool:
+        """Completely shutdown the bot and close WebSocket connection"""
+        try:
+            logger.info("🔌 Shutting down bot completely...")
+            
+            # First stop monitoring
+            self.stop_monitoring()
+            
+            # Then close WebSocket connection
+            try:
+                self.monitor.close_websocket_connection()
+            except Exception as e:
+                logger.warning(f"⚠️ Error closing WebSocket connection: {e}")
+            
+            logger.info("✅ Bot shutdown complete")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error shutting down bot: {e}")
+            return False
+    
     async def _handle_new_token(self, token: TokenInfo):
         """Handle new token detection"""
         try:
             settings = config_manager.config.bot_settings
+            
+            # Update holders count and apply filtering using Pump.fun API
+            passes_filter = await self.monitor.update_token_holders_and_filter(
+                token, 
+                min_liquidity=settings.min_liquidity, 
+                min_holders=settings.min_holders
+            )
+            
+            if not passes_filter:
+                logger.info(f"⏭️ Token {token.symbol} filtered out by liquidity/holders criteria")
+                return
             
             # Enrich token with age information (no Pump.fun checking)
             token_dict = {
@@ -350,7 +429,7 @@ class SniperBot:
                 'tokens_in_pool': token.tokens_in_pool,
                 'initial_buy': token.initial_buy,
                 'liquidity': token.liquidity,
-                'holders': token.holders,
+                'holders': token.holders,  # Now updated with real count from API
                 'created_timestamp': token.created_timestamp
             }
             
@@ -380,24 +459,13 @@ class SniperBot:
                 logger.info(f"⏭️ Token {token.symbol} filtered out by market cap: ${token.market_cap:,.0f}")
                 return
             
-            # Check liquidity filter
-            if token.liquidity < settings.min_liquidity:
-                logger.info(f"⏭️ Token {token.symbol} filtered out by liquidity: {token.liquidity:.4f} SOL (min: {settings.min_liquidity} SOL)")
-                return
-            
-            # Check holders filter
-            if token.holders < settings.min_holders:
-                logger.info(f"⏭️ Token {token.symbol} filtered out by holders: {token.holders} (min: {settings.min_holders})")
-                return
-            
-            # No Pump.fun requirement check - removed
-            
             # Log filter description
             filter_desc = self.token_filter.get_filter_description(
                 settings.token_age_filter, 
                 settings.custom_days
             )
             logger.info(f"🔍 Token {token.symbol} passed filters: {filter_desc}")
+            logger.info(f"📊 Token details: liquidity={token.liquidity:.2f} SOL, holders={token.holders}, market_cap=${token.market_cap:,.0f}")
             
             # Emit to UI for manual buying
             if self.ui_callback:
@@ -453,8 +521,9 @@ class SniperBot:
             logger.info(f"🎯 Auto-buying {token.symbol} with {settings.sol_per_snipe} SOL...")
             
             # Execute the buy
+            # success, signature, token_amount = await self.trader.buy_token(token.mint, settings.sol_per_snipe)
+            # Execute the buy using the main buy_token method (which handles position tracking)
             success = await self.buy_token(token.mint, settings.sol_per_snipe)
-            
             if success:
                 logger.info(f"✅ Auto-buy successful for {token.symbol}")
                 
@@ -493,72 +562,166 @@ class SniperBot:
                 })
     
     async def buy_token(self, mint: str, sol_amount: float) -> bool:
-        """Buy a token manually"""
+        """Buy a specific token"""
         try:
             if not self.keypair:
                 logger.error("❌ No wallet connected")
                 return False
             
-            # Check if we already have a position for this token
-            if mint in self.positions and self.positions[mint].is_active:
-                logger.warning(f"⚠️ Already have an active position for {mint}")
-                return False
+            logger.info(f"🛒 Attempting to buy {mint} for {sol_amount} SOL")
             
-            # Check max positions limit
-            active_positions = len([p for p in self.positions.values() if p.is_active])
-            settings = config_manager.config.bot_settings
-            if active_positions >= settings.max_positions:
-                logger.warning(f"⚠️ Max positions reached ({active_positions}/{settings.max_positions})")
-                return False
-            
-            logger.info(f"💰 Buying {sol_amount} SOL worth of {mint}")
-            
-            # Use trader to execute buy
+            # Execute the buy
             success, signature, token_amount = await self.trader.buy_token(mint, sol_amount)
             
             if success:
-                logger.info(f"✅ Buy successful for {mint}")
+                logger.info(f"✅ Buy successful! Signature: {signature}")
                 
-                # Create position record
+                # Create position tracking - metadata, entry price, and token amount will be updated from WebSocket data
                 position = Position(
                     token_mint=mint,
-                    token_symbol="",  # Will be updated when we get token info
-                    token_name="",    # Will be updated when we get token info
-                    entry_price=0.0,  # Will be updated when we get current price
-                    entry_timestamp=int(datetime.now().timestamp()),
+                    token_symbol="Unknown",  # Will be updated from WebSocket data
+                    token_name="Unknown",    # Will be updated from WebSocket data
+                    entry_price=0.0,         # Will be updated from our own trade data
+                    entry_timestamp=int(time.time()),
                     sol_amount=sol_amount,
-                    token_amount=token_amount,  # Use the actual token amount received
-                    buy_count_since_entry=0,
-                    last_buy_timestamp=int(datetime.now().timestamp()),
-                    buyers_since_entry=set()
+                    token_amount=0.0         # Will be updated from our own trade data
                 )
                 
                 self.positions[mint] = position
                 
-                # Subscribe to trade monitoring for this token
-                await self.monitor.subscribe_token_trades([mint])
+                logger.info(f"📊 Position created for {mint} | SOL Amount: {sol_amount}")
+                logger.info(f"🔄 Waiting for WebSocket data to update entry price, token amount, and metadata...")
                 
-                # Update balance
-                await self._update_wallet_balance()
+                # Record the transaction (without token amount for now)
+                await self._record_transaction("buy", mint, sol_amount, signature, 0.0)
                 
-                # Emit position update to UI
+                # Update PumpPortal monitoring to include this token
+                await self._update_pumpportal_monitoring()
+                
+                # Start price monitoring for this token (5 second interval)
+                await self._start_price_monitoring_for_token(mint)
+                
+                # Update UI
                 if self.ui_callback:
-                    self.ui_callback('position_update', {
-                        'mint': mint,
+                    # Convert signature to string for UI
+                    signature_str = str(signature) if signature else ""
+                    
+                    await self.ui_callback('position_update', {
                         'action': 'buy',
+                        'mint': mint,
                         'sol_amount': sol_amount,
-                        'timestamp': position.entry_timestamp
+                        'token_amount': 0.0,  # Will be updated from WebSocket
+                        'signature': signature_str,
+                        'entry_price': 0.0,  # Will be updated from WebSocket
+                        'token_symbol': "Unknown",  # Will be updated from WebSocket
+                        'token_name': "Unknown"     # Will be updated from WebSocket
                     })
                 
-                logger.info(f"📊 Position created and monitoring started for {mint}")
                 return True
             else:
                 logger.error(f"❌ Buy failed for {mint}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Error buying token: {e}")
+            logger.error(f"❌ Error buying token {mint}: {e}")
             return False
+
+    async def _update_pumpportal_monitoring(self):
+        """Update PumpPortal WebSocket monitoring when positions change"""
+        try:
+            # Get current tokens to monitor
+            tokens_to_monitor = list(self.positions.keys())
+            
+            # Get our wallet address for account monitoring
+            wallet_address = str(self.keypair.pubkey()) if self.keypair else None
+            
+            # Subscribe to our own account trades (for entry price and metadata)
+            if wallet_address:
+                await self.monitor.add_account_trades_subscription([wallet_address])
+                logger.info(f"📡 Added account trades subscription: {wallet_address}")
+            
+            # Subscribe to token trades (for monitoring other trades and 3-buy condition)
+            if tokens_to_monitor:
+                await self.monitor.add_token_trades_subscription(tokens_to_monitor)
+                logger.info(f"📡 Added token trades subscription for {len(tokens_to_monitor)} tokens: {tokens_to_monitor}")
+                
+        except Exception as e:
+            logger.error(f"❌ Error updating PumpPortal monitoring: {e}")
+
+    async def _start_price_monitoring_for_token(self, mint: str):
+        """Start price monitoring for a specific token"""
+        try:
+            logger.info(f"🔄 Starting price monitoring for {mint}")
+            
+            # Start continuous price monitoring for P&L tracking
+            async def price_callback(mint_address: str, price: float):
+                if mint_address in self.positions:
+                    position = self.positions[mint_address]
+                    position.current_price = price
+                    
+                    # Calculate P&L
+                    pnl_data = await self.helius_api.calculate_pnl(
+                        position.entry_price, 
+                        price, 
+                        position.token_amount
+                    )
+                    
+                    if pnl_data:
+                        position.current_pnl = pnl_data.get('pnl_absolute', 0)
+                        position.current_pnl_percent = pnl_data.get('pnl_percentage', 0)
+                        
+                        logger.info(f"💰 {mint_address}: ${price:.6f} | P&L: {position.current_pnl_percent:.2f}%")
+                        
+                        # Send price update to frontend
+                        if self.ui_callback:
+                            await self.ui_callback('price_update', {
+                                'mint': mint_address,
+                                'current_price': price,
+                                'current_pnl': position.current_pnl,
+                                'current_pnl_percent': position.current_pnl_percent,
+                                'entry_price': position.entry_price,
+                                'token_amount': position.token_amount,
+                                'token_symbol': position.token_symbol,
+                                'token_name': position.token_name
+                            })
+                        
+                        # Check for take profit or stop loss
+                        settings = config_manager.config.bot_settings
+                        if settings.take_profit and position.current_pnl_percent >= settings.take_profit:
+                            logger.info(f"🎯 Take profit triggered for {mint_address}")
+                            await self._execute_sell(mint_address, "take_profit")
+                        elif settings.stop_loss and position.current_pnl_percent <= -settings.stop_loss:
+                            logger.info(f"🛑 Stop loss triggered for {mint_address}")
+                            await self._execute_sell(mint_address, "stop_loss")
+            
+            # Start monitoring in background task
+            monitoring_task = asyncio.create_task(
+                self.helius_api.monitor_token_price(mint, price_callback, interval=5)
+            )
+            
+            # Store the task reference for potential cancellation later
+            if not hasattr(self, 'price_monitoring_tasks'):
+                self.price_monitoring_tasks = {}
+            self.price_monitoring_tasks[mint] = monitoring_task
+            
+            logger.info(f"🔄 Price monitoring started for {mint}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error starting price monitoring for {mint}: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    
+    async def _stop_price_monitoring_for_token(self, mint: str):
+        """Stop price monitoring for a specific token"""
+        try:
+            if hasattr(self, 'price_monitoring_tasks') and mint in self.price_monitoring_tasks:
+                task = self.price_monitoring_tasks[mint]
+                if not task.done():
+                    task.cancel()
+                    logger.info(f"🛑 Stopped price monitoring for {mint}")
+                del self.price_monitoring_tasks[mint]
+        except Exception as e:
+            logger.error(f"❌ Error stopping price monitoring for {mint}: {e}")
     
     async def sell_token(self, mint: str) -> bool:
         """Sell a token position"""
@@ -574,8 +737,15 @@ class SniperBot:
             position = self.positions[mint]
             logger.info(f"💸 Selling position for {position.token_symbol or mint}")
             
-            # Use trader to execute sell
-            success, signature, sol_received = await self.trader.sell_token(mint, position.token_amount)
+            # Get transaction type from settings
+            settings = config_manager.config.bot_settings
+            
+            # Use trader to execute sell with transaction type from settings
+            success, signature, sol_received = await self.trader.sell_token(
+                mint, 
+                position.token_amount, 
+                transaction_type=settings.transaction_type
+            )
             
             if success:
                 logger.info(f"✅ Sell successful for {position.token_symbol or mint}")
@@ -657,53 +827,155 @@ class SniperBot:
             logger.error(f"❌ Error monitoring positions: {e}")
 
     async def _handle_trade_activity(self, trade_info):
-        """Handle trade activity for monitoring buy counts"""
+        """Handle incoming trade activity for active positions"""
         try:
-            mint = trade_info.mint
+            mint = trade_info.get('mint', '')
+            buyer = trade_info.get('buyer', '')
+            tx_type = trade_info.get('txType', '')
             
-            # Check if we have an active position for this token
-            if mint not in self.positions or not self.positions[mint].is_active:
-                return
-            
-            position = self.positions[mint]
-            
-            # Only process buy transactions
-            if not trade_info.is_buy:
-                return
-            
-            # Skip our own buys
-            if trade_info.trader == str(self.keypair.pubkey()):
-                return
-            
-            # Check if this is a new buyer (not seen before)
-            if trade_info.trader not in position.buyers_since_entry:
-                position.buyers_since_entry.add(trade_info.trader)
-                position.buy_count_since_entry += 1
-                position.last_buy_timestamp = trade_info.timestamp
+            # Only process buy transactions for tokens we have positions in
+            if mint in self.positions and self.positions[mint].is_active and tx_type == 'buy':
+                position = self.positions[mint]
                 
-                logger.info(f"🆕 New buyer detected for {position.token_symbol or mint}: {trade_info.trader}")
-                logger.info(f"📊 Buy count since entry: {position.buy_count_since_entry}")
-                
-                # Check if we should sell (3 additional buyers)
-                if position.buy_count_since_entry >= 3:
-                    logger.info(f"🎯 3 additional buyers detected for {position.token_symbol or mint} - Selling!")
-                    await self.sell_token(mint)
+                # Skip if this is our own buy
+                if buyer == str(self.keypair.pubkey()):
                     return
-            
-            # Update position with current price
-            position.current_price = trade_info.price
-            
-            # Emit position update to UI
-            if self.ui_callback:
-                self.ui_callback('position_update', {
-                    'mint': mint,
-                    'buy_count': position.buy_count_since_entry,
-                    'current_price': trade_info.price,
-                    'timestamp': trade_info.timestamp
-                })
                 
+                # Track unique buyers since our entry
+                if buyer not in position.buyers_since_entry:
+                    position.buyers_since_entry.add(buyer)
+                    position.buy_count_since_entry += 1
+                    position.last_buy_timestamp = int(time.time())
+                    
+                    logger.info(f"📈 New buyer detected for {mint}: {buyer} (Total buyers since entry: {position.buy_count_since_entry})")
+                    
+                    # Check if we should sell based on 3-buyer rule
+                    settings = config_manager.config.bot_settings
+                    if settings.auto_sell and position.buy_count_since_entry >= 3:
+                        logger.info(f"🎯 3-buyer sell condition met for {mint}, executing sell...")
+                        await self._execute_sell(mint, "3-buyer rule")
+                        
         except Exception as e:
             logger.error(f"❌ Error handling trade activity: {e}")
+
+    async def _handle_pumpportal_trade(self, trade_data: Dict[str, Any]):
+        """Handle trade events from PumpPortal WebSocket"""
+        try:
+            # Store trade in history
+            self.trade_history.append(trade_data)
+            
+            # Keep only last 1000 trades to prevent memory issues
+            if len(self.trade_history) > 1000:
+                self.trade_history = self.trade_history[-1000:]
+            
+            mint = trade_data.get('mint', '')
+            tx_type = trade_data.get('txType', '')
+            trader = trade_data.get('traderPublicKey', '')
+            
+            logger.info(f"📊 PumpPortal trade: {tx_type} on {mint} by {trader}")
+            logger.info(f"📋 Full trade data: {trade_data}")
+            
+            # Check if this is our own trade (from subscribeAccountTrade)
+            if trader == str(self.keypair.pubkey()):
+                logger.info(f"🔄 Our own trade detected for {mint}, updating position...")
+                
+                # Check if we have a position for this token
+                if mint in self.positions and self.positions[mint].is_active:
+                    position = self.positions[mint]
+                    
+                    if tx_type == 'buy':
+                        # Extract entry price from our buy trade
+                        sol_amount = trade_data.get('solAmount', 0.0)
+                        token_amount = trade_data.get('tokenAmount', 0.0)
+                        
+                        logger.info(f"💰 Trade data - SOL Amount: {sol_amount}, Token Amount: {token_amount}")
+                        
+                        if token_amount > 0:
+                            entry_price = sol_amount / token_amount
+                            position.entry_price = entry_price
+                            position.token_amount = token_amount  # Update token amount from WebSocket data
+                            logger.info(f"💰 Updated entry price for {mint}: ${entry_price:.6f}")
+                            logger.info(f"💰 Updated token amount for {mint}: {token_amount:,.0f}")
+                            
+                            # Update transaction record with real token amount
+                            await self._update_transaction_with_token_amount(mint, token_amount)
+                        
+                        # Extract token metadata from trade data
+                        token_symbol = trade_data.get('symbol', 'Unknown')
+                        token_name = trade_data.get('name', 'Unknown')
+                        
+                        if token_symbol != 'Unknown':
+                            position.token_symbol = token_symbol
+                            position.token_name = token_name
+                            logger.info(f"📝 Updated token metadata: {token_symbol} ({token_name})")
+                        
+                        # Update UI with the real data
+                        if self.ui_callback:
+                            await self.ui_callback('position_update', {
+                                'action': 'metadata_update',
+                                'mint': mint,
+                                'entry_price': position.entry_price,
+                                'token_amount': position.token_amount,
+                                'token_symbol': position.token_symbol,
+                                'token_name': position.token_name
+                            })
+                
+                return  # Don't process our own trades for buy counting
+            
+            # Check if this is a token we have a position in (from subscribeTokenTrade)
+            if mint in self.positions and self.positions[mint].is_active:
+                position = self.positions[mint]
+                
+                logger.info(f"📈 Token trade detected for our position: {mint}")
+                logger.info(f"📊 Current position - Symbol: {position.token_symbol}, Entry Price: ${position.entry_price:.6f}, Token Amount: {position.token_amount:,.0f}")
+                
+                # For buy transactions, track buy activity and check 3-buy rule
+                if tx_type == 'buy':
+                    # Track this buy in our position
+                    position.buy_count_since_entry += 1
+                    position.last_buy_timestamp = trade_data.get('timestamp', int(time.time()))
+                    position.buyers_since_entry.add(trader)
+                    
+                    logger.info(f"📈 Buy detected for {mint}: {position.buy_count_since_entry} buys since our entry")
+                    logger.info(f"   Unique buyers: {len(position.buyers_since_entry)}")
+                    logger.info(f"   Buyer: {trader}")
+                    logger.info(f"   Trade SOL Amount: {trade_data.get('solAmount', 0.0)}")
+                    logger.info(f"   Trade Token Amount: {trade_data.get('tokenAmount', 0.0)}")
+                    
+                    # Use HeliusAPI's buy count method for 3-buy rule
+                    buy_count = self.helius_api.get_buy_count_for_token(mint, self.trade_history)
+                    
+                    logger.info(f"📈 PumpPortal: {buy_count} total buys detected for {mint}")
+                    
+                    # Check if we should sell based on 3-buy rule
+                    settings = config_manager.config.bot_settings
+                    if settings.auto_sell and buy_count >= 3:
+                        logger.info(f"🎯 PumpPortal 3-buy sell condition met for {mint}, executing sell...")
+                        await self._execute_sell(mint, "PumpPortal 3-buy rule")
+            
+            # Update UI if callback exists
+            if self.ui_callback:
+                await self.ui_callback('trade_update', trade_data)
+                
+        except Exception as e:
+            logger.error(f"❌ Error handling PumpPortal trade: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
+    async def _handle_pumpportal_new_token(self, token_data: Dict[str, Any]):
+        """Handle new token events from PumpPortal WebSocket"""
+        try:
+            logger.info(f"🆕 PumpPortal new token: {token_data}")
+            
+            # You can add logic here to automatically buy new tokens
+            # or filter them based on your criteria
+            
+            # Update UI if callback exists
+            if self.ui_callback:
+                await self.ui_callback('new_token', token_data)
+                
+        except Exception as e:
+            logger.error(f"❌ Error handling PumpPortal new token: {e}")
 
     async def _monitor_buy_activity(self):
         """Monitor buy activity for active positions"""
@@ -750,3 +1022,227 @@ class SniperBot:
             if "401" in str(e) or "Unauthorized" in str(e):
                 logger.error("💡 Check your HELIUS_API_KEY in the .env file")
             return config_manager.config.bot_state.sol_balance  # Return cached balance 
+
+    async def fetch_wallet_positions(self) -> List[Dict[str, Any]]:
+        """Fetch current wallet positions using HeliusAPI method"""
+        try:
+            if not self.keypair:
+                logger.warning("⚠️ No wallet connected, cannot fetch positions")
+                return []
+            
+            wallet_address = str(self.keypair.pubkey())
+            
+            # Use HeliusAPI method to get positions from trade history
+            positions = await self.helius_api.get_active_positions_from_trades(
+                wallet_address, 
+                self.trade_history
+            )
+            
+            logger.info(f"✅ Fetched {len(positions)} wallet positions from trade data")
+            return positions
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching wallet positions: {e}")
+            return []
+    
+    async def fetch_wallet_transactions(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Fetch wallet transaction history using Helius API"""
+        try:
+            if not self.keypair:
+                logger.warning("⚠️ No wallet connected, cannot fetch transactions")
+                return []
+            
+            wallet_address = str(self.keypair.pubkey())
+            raw_transactions = await self.helius_api.get_wallet_transactions(wallet_address, limit)
+            
+            # Parse each transaction using the Helius API parser
+            processed_transactions = []
+            for tx in raw_transactions:
+                parsed_tx = self.helius_api.parse_transaction_for_bot(tx)
+                if parsed_tx:
+                    processed_transactions.append(parsed_tx)
+            
+            logger.info(f"✅ Fetched and processed {len(processed_transactions)} wallet transactions")
+            return processed_transactions
+            
+        except Exception as e:
+            logger.error(f"❌ Error fetching wallet transactions: {e}")
+            return []
+    
+    async def update_position_prices(self):
+        """Update prices for all active positions"""
+        try:
+            for mint, position in self.positions.items():
+                if position.is_active:
+                    # Get current price
+                    current_price = await self.helius_api.get_token_price(mint)
+                    if current_price:
+                        position.current_price = current_price
+                        
+                        # Calculate P&L
+                        if position.entry_price > 0:
+                            pnl_percent = ((current_price - position.entry_price) / position.entry_price) * 100
+                            position.current_pnl_percent = pnl_percent
+                            
+                            # Calculate SOL P&L
+                            current_value = position.token_amount * current_price
+                            entry_value = position.token_amount * position.entry_price
+                            position.current_pnl = current_value - entry_value
+                        
+                        # Emit position update to UI
+                        if self.ui_callback:
+                            self.ui_callback('position_update', {
+                                'mint': mint,
+                                'current_price': current_price,
+                                'pnl_percent': position.current_pnl_percent,
+                                'pnl_sol': position.current_pnl,
+                                'timestamp': int(time.time())
+                            })
+            
+            logger.debug(f"✅ Updated prices for {len(self.positions)} positions")
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating position prices: {e}")
+    
+    async def start_price_monitoring(self):
+        """Start real-time price monitoring for active positions using SolanaTracker API"""
+        try:
+            logger.info("💰 Starting SolanaTracker price monitoring...")
+            
+            # Start price monitoring for all active positions
+            for mint in self.positions.keys():
+                if self.positions[mint].is_active:
+                    await self._start_price_monitoring_for_token(mint)
+            
+            logger.info("✅ Started SolanaTracker price monitoring")
+            
+        except Exception as e:
+            logger.error(f"❌ Error starting price monitoring: {e}")
+    
+    async def stop_price_monitoring(self):
+        """Stop real-time price monitoring"""
+        try:
+            # Price monitoring tasks will be cancelled when positions are closed
+            logger.info("✅ Stopped SolanaTracker price monitoring")
+        except Exception as e:
+            logger.error(f"❌ Error stopping price monitoring: {e}")
+    
+    async def _record_transaction(self, action: str, mint: str, sol_amount: float, signature, token_amount: float = 0):
+        """Record a transaction for history"""
+        try:
+            # Convert signature to string if it's a Signature object
+            signature_str = str(signature) if signature else ""
+            
+            transaction_data = {
+                'action': action,
+                'mint': mint,
+                'sol_amount': sol_amount,
+                'token_amount': token_amount,
+                'signature': signature_str,
+                'timestamp': int(time.time())
+            }
+            
+            # Emit transaction to UI
+            if self.ui_callback:
+                self.ui_callback('transaction', transaction_data)
+            
+            logger.info(f"📝 Recorded {action} transaction: {signature_str}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error recording transaction: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    
+    async def _update_transaction_with_token_amount(self, mint: str, token_amount: float):
+        """Update a transaction record with the real token amount from WebSocket data"""
+        try:
+            # Convert token amount to string for UI
+            token_amount_str = f"{token_amount:,.0f}" if token_amount > 0 else "0"
+            
+            # Emit updated transaction to UI
+            if self.ui_callback:
+                self.ui_callback('transaction_update', {
+                    'mint': mint,
+                    'token_amount': token_amount,
+                    'token_amount_formatted': token_amount_str,
+                    'timestamp': int(time.time())
+                })
+            
+            logger.info(f"📝 Updated transaction for {mint} with token amount: {token_amount_str}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating transaction: {e}")
+    
+    async def _execute_sell(self, mint: str, reason: str):
+        """Execute a sell order for a position"""
+        try:
+            if mint not in self.positions or not self.positions[mint].is_active:
+                logger.warning(f"⚠️ No active position found for {mint}")
+                return False
+            
+            position = self.positions[mint]
+            logger.info(f"💸 Selling position for {position.token_symbol or mint} - Reason: {reason}")
+            
+            # Get transaction type from settings
+            settings = config_manager.config.bot_settings
+            
+            # Use trader to execute sell with transaction type from settings
+            success, signature, sol_received = await self.trader.sell_token(
+                mint, 
+                position.token_amount, 
+                transaction_type=settings.transaction_type
+            )
+            
+            if success:
+                logger.info(f"✅ Sell successful for {position.token_symbol or mint}")
+                
+                # Calculate P&L based on SOL received vs SOL invested
+                if sol_received > 0:
+                    pnl_sol = sol_received - position.sol_amount
+                    pnl_percent = (pnl_sol / position.sol_amount) * 100
+                    
+                    position.current_pnl = pnl_sol
+                    position.current_pnl_percent = pnl_percent
+                    
+                    logger.info(f"💰 P&L: {pnl_percent:.2f}% ({pnl_sol:.4f} SOL)")
+                
+                # Close position
+                position.is_active = False
+                
+                # Stop price monitoring for this token
+                await self._stop_price_monitoring_for_token(mint)
+                
+                # Unsubscribe from monitoring
+                await self.monitor.unsubscribe_token_trades([mint])
+                
+                # Record transaction
+                await self._record_transaction('sell', mint, sol_received, signature, position.token_amount)
+                
+                # Update balance
+                await self._update_wallet_balance()
+                
+                # Emit position update to UI
+                if self.ui_callback:
+                    # Convert signature to string for UI
+                    signature_str = str(signature) if signature else ""
+                    
+                    self.ui_callback('position_update', {
+                        'mint': mint,
+                        'action': 'sell',
+                        'sol_received': sol_received,
+                        'pnl_percent': position.current_pnl_percent,
+                        'pnl_sol': position.current_pnl,
+                        'signature': signature_str,
+                        'reason': reason,
+                        'timestamp': int(time.time())
+                    })
+                
+                logger.info(f"📊 Position closed for {mint}")
+                return True
+            else:
+                logger.error(f"❌ Sell failed for {position.token_symbol or mint}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error executing sell: {e}")
+            return False 

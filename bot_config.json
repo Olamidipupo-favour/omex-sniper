@@ -1,25 +1,26 @@
 {
   "private_key": "23qVxyrvL1RjZE7q6TusWxqpc6oNNM4hA2vX9Lja2TBa1aaJE8dTJwAQxh7yfRrn1yDTywMujDJzLp6JkLzD1q1R",
   "bot_settings": {
-    "sol_per_snipe": 0.01,
+    "sol_per_snipe": 0.0001,
     "max_positions": 5,
     "profit_target_percent": 50.0,
     "stop_loss_percent": 20.0,
     "min_market_cap": 1000.0,
     "max_market_cap": 100000.0,
-    "min_liquidity": 100.0,
-    "min_holders": 10,
+    "min_liquidity": 10.0,
+    "min_holders": 2,
     "auto_buy": false,
     "auto_sell": true,
-    "token_age_filter": "last_3_days",
+    "token_age_filter": "new_only",
     "custom_days": 7,
-    "include_pump_tokens": true
+    "include_pump_tokens": true,
+    "transaction_type": "local"
   },
   "bot_state": {
-    "is_running": true,
+    "is_running": false,
     "wallet_connected": true,
     "wallet_address": "952LPLt7zzU4RGUmBoPV7zQwsCire85P12Ht6Tp8Dno9",
-    "sol_balance": 0.04,
+    "sol_balance": 0.017363512,
     "total_pnl": 0.0,
     "active_positions": 0
   }

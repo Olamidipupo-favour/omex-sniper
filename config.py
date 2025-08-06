@@ -12,7 +12,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Solana and API Configuration
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
+HELIUS_API_KEY = os.getenv('HELIUS_API_KEY', '')
 HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet-beta.solana.com"
 
 # Log the RPC configuration
@@ -24,7 +24,7 @@ else:
 # PumpPortal Configuration  
 PUMPPORTAL_API_URL = "https://pumpportal.fun/api"
 PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data"
-PUMPPORTAL_API_KEY = os.getenv("PUMPPORTAL_API_KEY", "")
+PUMPPORTAL_API_KEY = os.getenv('PUMPPORTAL_API_KEY', '')
 
 # Alternative WebSocket URLs to try
 ALT_WS_URLS = [
@@ -55,6 +55,8 @@ class BotSettings:
     token_age_filter: str = "new_only"  # new_only, last_1_day, last_3_days, last_7_days, last_14_days, last_30_days, custom_days
     custom_days: int = 7  # Custom number of days for token age filter
     include_pump_tokens: bool = True  # Include tokens from Pump.fun API
+    # Transaction type settings
+    transaction_type: str = "local"  # "local" or "lightning" - local builds and sends transactions, lightning uses PumpPortal's lightning API
 
 @dataclass
 class BotState:

@@ -89,17 +89,30 @@ class PumpPortalTrader:
                 # Get wallet public key
                 public_key = str(self.keypair.pubkey())
                 
+                # Debug logging
+                logger.info(f"🔍 Building {action} transaction - amount: {amount}, type: {type(amount)}")
+                
+                # Validate inputs
+                if not mint or not public_key:
+                    logger.error(f"❌ Invalid inputs - mint: {mint}, public_key: {public_key}")
+                    return None
+                
+                if amount <= 0:
+                    logger.error(f"❌ Invalid amount: {amount}")
+                    return None
+                
                 # Prepare request data according to PumpPortal API docs
+                logger.info(f"📊 Preparing {action} request for {mint}")
                 if action == "buy":
                     # For buy, amount is SOL and denominatedInSol should be "true"
                     request_data = {
                         "publicKey": public_key,
                         "action": "buy",
                         "mint": mint,
-                        "amount": int(amount * 1e9),  # Convert SOL to lamports
+                        "amount": float(amount),  # Convert SOL to lamports
                         "denominatedInSol": "true",
                         "slippage": int(slippage),
-                        "priorityFee": 0.005,  # Default priority fee
+                        "priorityFee": 0.00005,  # Default priority fee
                         "pool": pool
                     }
                 elif action == "sell":
@@ -108,14 +121,15 @@ class PumpPortalTrader:
                         "publicKey": public_key,
                         "action": "sell",
                         "mint": mint,
-                        "amount": int(amount),  # Token amount
+                        "amount": float(amount),  # Token amount
                         "denominatedInSol": "false",
                         "slippage": int(slippage),
-                        "priorityFee": 0.005,  # Default priority fee
+                        "priorityFee": 0.00005,  # Default priority fee
                         "pool": pool
                     }
                 else:
-                    raise ValueError(f"Invalid action: {action}")
+                    logger.error(f"❌ Invalid action: {action}")
+                    return None
                 
                 url = f"{PUMPPORTAL_API_URL}/trade-local"
                 
@@ -125,7 +139,7 @@ class PumpPortalTrader:
                 logger.info(f"📊 Request data: {request_data}")
                 
                 # Make the request
-                async with session.post(url, data=request_data) as response:
+                async with session.post(url, json=request_data, timeout=aiohttp.ClientTimeout(total=30)) as response:
                     logger.info(f"📥 Response status: {response.status}")
                     logger.info(f"📥 Response headers: {dict(response.headers)}")
                     
@@ -174,6 +188,107 @@ class PumpPortalTrader:
             import traceback
             logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return None
+    
+    async def lightning_transaction(self, action: str, mint: str, amount: float, slippage: float = 5.0, 
+                                  pool: str = "auto", skip_preflight: str = "true", jito_only: str = "false") -> Tuple[bool, Optional[str], float]:
+        """Execute lightning transaction using PumpPortal API"""
+        try:
+            if not self.keypair:
+                logger.error("❌ No wallet keypair available")
+                return False, None, 0.0
+            
+            # Get wallet public key
+            public_key = str(self.keypair.pubkey())
+            
+            # Prepare request data according to Lightning API docs
+            print("Amount: ", amount)
+            if action == "buy":
+                # For buy, amount is SOL and denominatedInSol should be "true"
+                request_data = {
+                    "action": "buy",
+                    "mint": mint,
+                    "amount": float(amount),  # Convert SOL to lamports
+                    "denominatedInSol": "true",
+                    "slippage": int(slippage),
+                    "priorityFee": 0.00005,  # Default priority fee for lightning
+                    "pool": pool,
+                    "skipPreflight": skip_preflight,
+                    "jitoOnly": jito_only
+                }
+            elif action == "sell":
+                # For sell, amount is token amount and denominatedInSol should be "false"
+                request_data = {
+                    "action": "sell",
+                    "mint": mint,
+                    "amount": float(amount),  # Token amount
+                    "denominatedInSol": "false",
+                    "slippage": int(slippage),
+                    "priorityFee": 0.00005,  # Default priority fee for lightning
+                    "pool": pool,
+                    "skipPreflight": skip_preflight,
+                    "jitoOnly": jito_only
+                }
+            else:
+                raise ValueError(f"Invalid action: {action}")
+            
+            url = f"{PUMPPORTAL_API_URL}/trade?api-key={PUMPPORTAL_API_KEY}"
+            
+            # Log the request details
+            logger.info(f"⚡ Lightning {action} transaction for {mint}")
+            logger.info(f"🔗 URL: {url}")
+            logger.info(f"📊 Request data: {request_data}")
+            
+            # Create a new session for this request to avoid event loop issues
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                async with session.post(url, data=request_data) as response:
+                    logger.info(f"📥 Response status: {response.status}")
+                    logger.info(f"📥 Response headers: {dict(response.headers)}")
+                    
+                    if response.status == 200:
+                        response_text = await response.text()
+                        logger.info(f"📥 Response text: {response_text}")
+                        
+                        try:
+                            data = json.loads(response_text)
+                            logger.info(f"✅ Lightning transaction response: {data}")
+                            
+                            # Check if transaction was successful
+                            if "signature" in data:
+                                logger.info(f"✅ Lightning transaction successful: {data}")
+                                signature = data["signature"]
+                                logger.info(f"✅ Lightning transaction successful: {signature}")
+                                
+                                # Extract token amount if available
+                                token_amount = data.get("outputAmount", 0)
+                                if action == "buy":
+                                    logger.info(f"✅ Lightning buy successful - Tokens: {token_amount:,.0f}")
+                                else:
+                                    logger.info(f"✅ Lightning sell successful - SOL received: {token_amount/1e9:.4f}")
+                                
+                                return True, signature, token_amount
+                            else:
+                                logger.error(f"❌ Lightning transaction failed: {data}")
+                                return False, None, 0.0
+                                
+                        except json.JSONDecodeError:
+                            logger.error(f"❌ Invalid JSON response: {response_text}")
+                            return False, None, 0.0
+                    else:
+                        # For error responses, try to get text
+                        try:
+                            response_text = await response.text()
+                            logger.error(f"❌ Lightning API error {response.status}: {response_text}")
+                        except:
+                            logger.error(f"❌ Lightning API error {response.status}: Could not read response")
+                        
+                        logger.error(f"❌ Lightning request data that failed: {request_data}")
+                        return False, None, 0.0
+                        
+        except Exception as e:
+            logger.error(f"❌ Error in lightning transaction: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            return False, None, 0.0
     
     async def sign_and_send_transaction(self, transaction_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """Sign and send transaction"""
@@ -292,13 +407,16 @@ class PumpPortalTrader:
                 try:
                     result = await client.get_signature_statuses([signature], search_transaction_history=True)
                     if result.value and len(result.value) > 0 and None not in result.value:
-                        logger.info(f"🙈 Transaction : {result}")
-                        exit()
+                        logger.info(f"🙈 Transaction status check: {result}")
                         status = result.value[0]
                         if status and status.confirmation_status:
                             logger.info(f"Transaction status: {status}")
                             logger.info(f"Transaction confirmation status: {status.confirmation_status}")
-                            if status.confirmation_status in ["confirmed", "finalized"]:
+                            
+                            # Check if transaction is confirmed or finalized
+                            # Convert enum to string for comparison
+                            confirmation_str = str(status.confirmation_status).split('.')[-1].lower()
+                            if confirmation_str in ["confirmed", "finalized"]:
                                 logger.info(f"Transaction confirmed: {signature}")
                                 return True
                             elif status.err:
@@ -318,54 +436,75 @@ class PumpPortalTrader:
             logger.error(f"Error waiting for confirmation: {e}")
             return False
     
-    async def buy_token(self, mint_address: str, sol_amount: float, slippage: float = 5.0) -> Tuple[bool, Optional[str], float]:
+    async def buy_token(self, mint_address: str, sol_amount: float, slippage: float = 5.0, transaction_type: str = "local") -> Tuple[bool, Optional[str], float]:
         """Buy tokens using SOL"""
         try:
-            logger.info(f"Buying {sol_amount} SOL worth of {mint_address}")
+            logger.info(f"Buying {sol_amount} SOL worth of {mint_address} using {transaction_type} transaction")
             
-            # Build transaction
-            tx_data = await self.build_transaction("buy", mint_address, sol_amount, slippage)
-            if not tx_data:
-                return False, None, 0.0
-            
-            # Sign and send
-            success, signature = await self.sign_and_send_transaction(tx_data)
-            
-            if success:
-                # Extract token amount from response or calculate estimate
-                token_amount = tx_data.get("outputAmount", 0)
-                logger.info(f"✅ Buy successful - Tokens: {token_amount:,.0f}")
-                return True, signature, token_amount
+            if transaction_type == "lightning":
+                # Use lightning transaction
+                success, signature, token_amount = await self.lightning_transaction("buy", mint_address, sol_amount, slippage)
+                return success, signature, token_amount
             else:
-                return False, signature, 0.0
+                # Use local transaction (default)
+                # Build transaction
+                tx_data = await self.build_transaction("buy", mint_address, sol_amount, slippage)
+                logger.info(f"🔍 Transaction data: {tx_data}")
+                if not tx_data:
+                    logger.error(f"❌ Failed to build transaction for {mint_address}")
+                    return False, None, 0.0
+                
+                # Sign and send
+                success, signature = await self.sign_and_send_transaction(tx_data)
+                logger.info(f"sign and send transaction: {success} signature: {signature}")
+                if success:
+                    # Extract token amount from response or calculate estimate
+                    token_amount = tx_data.get("outputAmount", 0)
+                    logger.info(f"✅ Buy successful - Tokens: {token_amount:,.0f}")
+                    return True, signature, token_amount
+                else:
+                    logger.error(f"❌ Failed to sign and send transaction for {mint_address}")
+                    return False, signature, 0.0
                 
         except Exception as e:
             logger.error(f"Error buying token: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return False, None, 0.0
     
-    async def sell_token(self, mint_address: str, token_amount: float, slippage: float = 5.0) -> Tuple[bool, Optional[str], float]:
+    async def sell_token(self, mint_address: str, token_amount: float, slippage: float = 5.0, transaction_type: str = "local") -> Tuple[bool, Optional[str], float]:
         """Sell tokens for SOL"""
         try:
-            logger.info(f"Selling {token_amount:,.0f} tokens of {mint_address}")
+            logger.info(f"Selling {token_amount:,.0f} tokens of {mint_address} using {transaction_type} transaction")
             
-            # Build transaction
-            tx_data = await self.build_transaction("sell", mint_address, token_amount, slippage)
-            if not tx_data:
-                return False, None, 0.0
-            
-            # Sign and send
-            success, signature = await self.sign_and_send_transaction(tx_data)
-            
-            if success:
-                # Extract SOL amount from response
-                sol_received = tx_data.get("outputAmount", 0) / 1e9  # Convert lamports to SOL
-                logger.info(f"✅ Sell successful - SOL received: {sol_received:.4f}")
-                return True, signature, sol_received
+            if transaction_type == "lightning":
+                # Use lightning transaction
+                success, signature, sol_received = await self.lightning_transaction("sell", mint_address, token_amount, slippage)
+                return success, signature, sol_received
             else:
-                return False, signature, 0.0
+                # Use local transaction (default)
+                # Build transaction
+                tx_data = await self.build_transaction("sell", mint_address, token_amount, slippage)
+                if not tx_data:
+                    logger.error(f"❌ Failed to build sell transaction for {mint_address}")
+                    return False, None, 0.0
+                
+                # Sign and send
+                success, signature = await self.sign_and_send_transaction(tx_data)
+                
+                if success:
+                    # Extract SOL amount from response
+                    sol_received = tx_data.get("outputAmount", 0) / 1e9  # Convert lamports to SOL
+                    logger.info(f"✅ Sell successful - SOL received: {sol_received:.4f}")
+                    return True, signature, sol_received
+                else:
+                    logger.error(f"❌ Failed to sign and send sell transaction for {mint_address}")
+                    return False, signature, 0.0
                 
         except Exception as e:
             logger.error(f"Error selling token: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             return False, None, 0.0
     
     def get_token_accounts(self, owner: str) -> List[Dict[str, Any]]:

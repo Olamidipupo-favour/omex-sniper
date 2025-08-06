@@ -10,13 +10,43 @@ class SniperBotApp {
         this.transactions = [];
         this.logs = [];
         
+        // Add initial log message
+        this.addLog('Pump.Fun Sniper Bot initialized', 'info');
+        
         this.initializeApp();
+        this.initializeTabStates();
+    }
+    
+    initializeTabStates() {
+        console.log('🔧 Initializing tab states...');
+        
+        // Hide ALL tab content first by removing active class
+        document.querySelectorAll('.tab-content').forEach(content => {
+            content.classList.remove('active');
+        });
+        
+        // Show ONLY monitoring tab by default
+        const monitoringContent = document.getElementById('monitoring-content');
+        if (monitoringContent) {
+            monitoringContent.classList.add('active');
+            console.log('✅ Monitoring tab initialized as active');
+        }
+        
+        // Set monitoring tab button as active
+        const monitoringTab = document.querySelector('[data-tab="monitoring"]');
+        if (monitoringTab) {
+            monitoringTab.classList.add('active');
+        }
+        
+        console.log('✅ Tab states initialized');
     }
     
     initializeApp() {
         this.setupEventListeners();
         this.connectWebSocket();
         this.startUIUpdates();
+        
+        // Load initial data immediately
         this.loadInitialData();
     }
     
@@ -32,12 +62,17 @@ class SniperBotApp {
         
         // Clear buttons
         document.getElementById('clearTokensBtn').addEventListener('click', () => this.clearTokens());
-        document.getElementById('clearTransactionsBtn').addEventListener('click', () => this.clearTransactions());
         document.getElementById('clearLogsBtn').addEventListener('click', () => this.clearLogs());
+        
+        // Note: clearTransactions is handled by onclick in HTML
         
         // Tab switching
         document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => this.switchTab(e.target.dataset.tab));
+            btn.addEventListener('click', (e) => {
+                const tabName = e.currentTarget.dataset.tab;
+                console.log('Tab clicked:', tabName);
+                this.switchTab(tabName);
+            });
         });
         
         // Settings form inputs
@@ -82,20 +117,29 @@ class SniperBotApp {
                 this.addLog('WebSocket disconnected', 'error');
             });
             
-            this.socket.on('new_token', (token) => {
-                this.handleNewToken(token);
+            // WebSocket event handlers
+            this.socket.on('new_token', (data) => {
+                this.handleNewToken(data);
             });
             
-            this.socket.on('position_update', (position) => {
-                this.handlePositionUpdate(position);
+            this.socket.on('position_update', (data) => {
+                this.handlePositionUpdate(data);
             });
             
-            this.socket.on('transaction', (transaction) => {
-                this.handleTransaction(transaction);
+            this.socket.on('transaction', (data) => {
+                this.handleTransaction(data);
             });
             
-            this.socket.on('error', (error) => {
-                this.handleError(error);
+            this.socket.on('transaction_update', (data) => {
+                this.handleTransactionUpdate(data);
+            });
+            
+            this.socket.on('price_update', (data) => {
+                this.handlePriceUpdate(data);
+            });
+            
+            this.socket.on('trade_update', (data) => {
+                this.handleTradeUpdate(data);
             });
             
             this.socket.on('auto_buy_success', (data) => {
@@ -104,6 +148,10 @@ class SniperBotApp {
             
             this.socket.on('auto_buy_error', (data) => {
                 this.handleAutoBuyError(data);
+            });
+            
+            this.socket.on('error', (data) => {
+                this.handleError(data);
             });
             
         } catch (error) {
@@ -316,7 +364,8 @@ class SniperBotApp {
                 auto_sell: document.getElementById('autoSell').checked,
                 token_age_filter: document.getElementById('tokenAgeFilter').value,
                 custom_days: parseInt(document.getElementById('customDays').value),
-                include_pump_tokens: document.getElementById('includePumpTokens').checked
+                include_pump_tokens: document.getElementById('includePumpTokens').checked,
+                transaction_type: document.getElementById('transactionType').value
             };
             
             const response = await fetch('/api/settings/update', {
@@ -443,33 +492,32 @@ class SniperBotApp {
         }
     }
     
-    handlePositionUpdate(position) {
-        const index = this.positions.findIndex(p => p.mint === position.mint);
-        if (index >= 0) {
-            this.positions[index] = position;
-        } else {
-            this.positions.push(position);
+    handlePositionUpdate(data) {
+        // Update positions table if we're on the positions tab
+        if (document.getElementById('positions-content').style.display !== 'none') {
+            this.fetchPositions();
         }
         
-        this.updatePositionsTable();
-        this.updateTotalPnL();
+        // Show notification for significant updates
+        if (data.action === 'sell') {
+            const pnlText = data.pnl_percent ? ` (${data.pnl_percent.toFixed(2)}%)` : '';
+            this.showNotification(`Position sold${pnlText}`, 'success');
+        }
     }
     
-    handleTransaction(transaction) {
-        this.transactions.unshift(transaction);
-        if (this.transactions.length > 100) {
-            this.transactions = this.transactions.slice(0, 100);
+    handleTransaction(data) {
+        // Update transactions table if we're on the transactions tab
+        if (document.getElementById('transactions-content').style.display !== 'none') {
+            this.fetchTransactions();
         }
         
-        this.updateTransactionsTable();
-        
-        const type = transaction.type === 'buy' ? '🟢' : '🔴';
-        this.addLog(`${type} ${transaction.type.toUpperCase()}: ${transaction.symbol}`, 'info');
+        // Show notification for new transactions
+        const actionText = data.action === 'buy' ? 'Buy' : 'Sell';
+        this.showNotification(`${actionText} transaction completed`, 'success');
     }
     
-    handleError(error) {
-        console.error('WebSocket error:', error);
-        this.addLog(`Error: ${error}`, 'error');
+    handleError(data) {
+        this.showNotification(data.message, 'error');
     }
     
     handleBuyError(error) {
@@ -511,6 +559,64 @@ class SniperBotApp {
         
         this.showToast(errorMessage, 'error');
         this.addLog(`Auto-buy error: ${data.token_symbol} - ${errorMessage}`, 'error');
+    }
+    
+    handleTransactionUpdate(data) {
+        console.log('Transaction update:', data);
+        this.addLog(`Transaction updated: ${data.mint.slice(0, 8)}... - Amount: ${data.token_amount_formatted}`, 'info');
+        
+        // Update the transaction in the UI if it exists
+        this.updateTransactionsTable();
+    }
+    
+    handlePriceUpdate(data) {
+        console.log('Price update:', data);
+        
+        // Update position P&L in real-time
+        const positionRow = document.querySelector(`[data-mint="${data.mint}"]`);
+        if (positionRow) {
+            const pnlCell = positionRow.querySelector('.col-pnl');
+            const priceCell = positionRow.querySelector('.col-price');
+            
+            if (pnlCell) {
+                const pnlClass = data.current_pnl_percent >= 0 ? 'positive' : 'negative';
+                pnlCell.innerHTML = `
+                    <span class="pnl ${pnlClass}">
+                        ${data.current_pnl_percent >= 0 ? '+' : ''}${data.current_pnl_percent.toFixed(2)}%
+                    </span>
+                    <div class="pnl-absolute">${data.current_pnl >= 0 ? '+' : ''}${data.current_pnl.toFixed(6)} SOL</div>
+                `;
+            }
+            
+            if (priceCell) {
+                priceCell.textContent = `$${data.current_price.toFixed(8)}`;
+            }
+        }
+        
+        // Update total P&L
+        this.updateTotalPnL();
+        
+        // Add log entry for significant price changes
+        if (Math.abs(data.current_pnl_percent) > 5) {
+            this.addLog(`💰 ${data.token_symbol}: ${data.current_pnl_percent >= 0 ? '+' : ''}${data.current_pnl_percent.toFixed(2)}% ($${data.current_price.toFixed(8)})`, 'info');
+        }
+    }
+    
+    handleTradeUpdate(data) {
+        console.log('Trade update:', data);
+        
+        // Add trade activity to logs
+        const tradeType = data.txType === 'buy' ? '🟢 Buy' : '🔴 Sell';
+        const trader = data.traderPublicKey ? data.traderPublicKey.slice(0, 8) + '...' : 'Unknown';
+        const solAmount = data.solAmount ? data.solAmount.toFixed(4) : '0';
+        const tokenAmount = data.tokenAmount ? this.formatTokenAmount(data.tokenAmount) : '0';
+        
+        this.addLog(`${tradeType}: ${trader} - ${solAmount} SOL for ${tokenAmount} tokens`, 'info');
+        
+        // Update positions table if this affects our positions
+        if (this.positions.some(pos => pos.mint === data.mint)) {
+            this.updatePositionsTable();
+        }
     }
     
     updateNewTokensTable() {
@@ -716,10 +822,36 @@ class SniperBotApp {
     }
     
     updateLogsTable() {
+        console.log('🔍 updateLogsTable called');
+        
+        // Check what elements exist
         const logsContent = document.getElementById('logsContent');
-        if (!logsContent) return;
+        const logsContainer = document.querySelector('.logs-container');
+        const logsContentDiv = document.querySelector('#logs-content');
+        
+        console.log('🔍 HTML Elements check:');
+        console.log('- #logsContent:', logsContent);
+        console.log('- .logs-container:', logsContainer);
+        console.log('- #logs-content:', logsContentDiv);
+        
+        if (!logsContent) {
+            console.error('❌ Could not find #logsContent');
+            console.log('🔍 Available elements with "logs" in ID:');
+            document.querySelectorAll('[id*="logs"]').forEach(el => {
+                console.log('- Found element:', el.id, el);
+            });
+            return;
+        }
         
         logsContent.innerHTML = '';
+        
+        if (this.logs.length === 0) {
+            console.log('📝 No logs to display');
+            logsContent.innerHTML = '<div class="log-entry"><span class="timestamp">[00:00:00]</span><span class="message">No logs yet</span></div>';
+            return;
+        }
+        
+        console.log(`📊 Displaying ${this.logs.length} log entries`);
         
         this.logs.slice(0, 50).forEach(log => {
             const logEntry = document.createElement('div');
@@ -731,26 +863,66 @@ class SniperBotApp {
             `;
             logsContent.appendChild(logEntry);
         });
+        
+        console.log('✅ Logs table updated successfully');
     }
     
     switchTab(tabName) {
-        // Update tab buttons
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.classList.remove('active');
+        console.log('🔍 Switching to tab:', tabName);
+        
+        // Debug: Check current state
+        console.log('🔍 Current tab states:');
+        document.querySelectorAll('.tab-content').forEach(content => {
+            console.log(`- ${content.id}: display=${content.style.display}, has active class=${content.classList.contains('active')}`);
         });
-        const targetBtn = document.querySelector(`[data-tab="${tabName}"]`);
-        if (targetBtn) {
-            targetBtn.classList.add('active');
+        
+        // Hide ALL tab content by removing active class only
+        document.querySelectorAll('.tab-content').forEach(content => {
+            content.classList.remove('active');
+        });
+        
+        // Remove active class from all tab buttons
+        document.querySelectorAll('.tab-btn').forEach(tab => {
+            tab.classList.remove('active');
+        });
+        
+        // Show ONLY the selected tab content by adding active class
+        const selectedContent = document.getElementById(tabName + '-content');
+        
+        if (selectedContent) {
+            selectedContent.classList.add('active');
+            console.log('✅ Showing content for:', tabName);
+            console.log('✅ Content element:', selectedContent);
+            console.log('✅ Content has active class:', selectedContent.classList.contains('active'));
+        } else {
+            console.error('❌ Could not find content for tab:', tabName);
         }
         
-        // Update tab content
-        document.querySelectorAll('.tab-pane').forEach(pane => {
-            pane.classList.remove('active');
-        });
-        const targetPane = document.getElementById(tabName);
-        if (targetPane) {
-            targetPane.classList.add('active');
+        // Add active class to selected tab button
+        const selectedTab = document.querySelector(`[data-tab="${tabName}"]`);
+        if (selectedTab) {
+            selectedTab.classList.add('active');
+            console.log('✅ Activated tab button:', tabName);
+        } else {
+            console.error('❌ Could not find tab button for:', tabName);
         }
+        
+        // Load data for specific tabs
+        if (tabName === 'positions') {
+            this.fetchPositions();
+        } else if (tabName === 'transactions') {
+            this.fetchTransactions();
+        } else if (tabName === 'logs') {
+            this.updateLogsTable();
+        }
+        
+        // Debug: Check final state
+        setTimeout(() => {
+            console.log('🔍 Final tab states:');
+            document.querySelectorAll('.tab-content').forEach(content => {
+                console.log(`- ${content.id}: has active class=${content.classList.contains('active')}`);
+            });
+        }, 50);
     }
     
     validateSettings() {
@@ -778,13 +950,17 @@ class SniperBotApp {
     }
     
     loadInitialData() {
+        console.log('Loading initial data...');
+        
         // Load bot status from backend
         fetch('/api/status')
             .then(response => response.json())
             .then(result => {
+                console.log('Status response:', result);
                 if (result.success) {
                     this.updateUIFromStatus(result.data);
                 } else {
+                    console.error('Failed to load bot status:', result.error);
                     this.addLog('Failed to load bot status', 'error');
                 }
             })
@@ -795,8 +971,11 @@ class SniperBotApp {
     }
     
     updateUIFromStatus(status) {
+        console.log('Updating UI from status:', status);
+        
         // Update wallet info
-        if (status.wallet_connected) {
+        if (status.wallet_connected && status.wallet_address) {
+            console.log('Restoring wallet connection...');
             document.getElementById('walletForm').style.display = 'none';
             document.getElementById('walletInfo').style.display = 'block';
             document.getElementById('walletAddress').textContent = status.wallet_address;
@@ -804,6 +983,7 @@ class SniperBotApp {
             document.getElementById('solBalance').textContent = status.sol_balance.toFixed(3);
             this.walletConnected = true;
         } else {
+            console.log('No wallet connected, showing wallet form...');
             document.getElementById('walletForm').style.display = 'block';
             document.getElementById('walletInfo').style.display = 'none';
             this.walletConnected = false;
@@ -815,19 +995,21 @@ class SniperBotApp {
         
         // Update settings
         if (status.settings) {
-            document.getElementById('solAmount').value = status.settings.sol_per_snipe;
-            document.getElementById('maxPositions').value = status.settings.max_positions;
-            document.getElementById('profitTarget').value = status.settings.profit_target_percent;
-            document.getElementById('stopLoss').value = status.settings.stop_loss_percent;
-            document.getElementById('minMarketCap').value = status.settings.min_market_cap;
-            document.getElementById('maxMarketCap').value = status.settings.max_market_cap;
-            document.getElementById('minLiquidity').value = status.settings.min_liquidity;
-            document.getElementById('minHolders').value = status.settings.min_holders;
-            document.getElementById('autoBuy').checked = status.settings.auto_buy;
-            document.getElementById('autoSell').checked = status.settings.auto_sell;
+            console.log('Restoring settings:', status.settings);
+            document.getElementById('solAmount').value = status.settings.sol_per_snipe || 0.01;
+            document.getElementById('maxPositions').value = status.settings.max_positions || 5;
+            document.getElementById('profitTarget').value = status.settings.profit_target_percent || 50;
+            document.getElementById('stopLoss').value = status.settings.stop_loss_percent || 20;
+            document.getElementById('minMarketCap').value = status.settings.min_market_cap || 1000;
+            document.getElementById('maxMarketCap').value = status.settings.max_market_cap || 100000;
+            document.getElementById('minLiquidity').value = status.settings.min_liquidity || 100;
+            document.getElementById('minHolders').value = status.settings.min_holders || 10;
+            document.getElementById('autoBuy').checked = status.settings.auto_buy || false;
+            document.getElementById('autoSell').checked = status.settings.auto_sell !== false; // Default to true
             document.getElementById('tokenAgeFilter').value = status.settings.token_age_filter || 'new_only';
             document.getElementById('customDays').value = status.settings.custom_days || 7;
-            document.getElementById('includePumpTokens').checked = status.settings.include_pump_tokens !== false;
+            document.getElementById('includePumpTokens').checked = status.settings.include_pump_tokens !== false; // Default to true
+            document.getElementById('transactionType').value = status.settings.transaction_type || 'local';
             
             // Show/hide custom days container based on filter selection
             const customDaysContainer = document.getElementById('customDaysContainer');
@@ -839,8 +1021,14 @@ class SniperBotApp {
         }
         
         // Update header stats
-        document.getElementById('totalPnl').textContent = `${status.total_pnl >= 0 ? '+' : ''}${status.total_pnl.toFixed(4)} SOL`;
-        document.getElementById('activePositions').textContent = status.active_positions;
+        if (status.total_pnl !== undefined) {
+            document.getElementById('totalPnl').textContent = `${status.total_pnl >= 0 ? '+' : ''}${status.total_pnl.toFixed(4)} SOL`;
+        }
+        if (status.active_positions !== undefined) {
+            document.getElementById('activePositions').textContent = status.active_positions;
+        }
+        
+        console.log('UI update completed');
     }
     
     startUIUpdates() {
@@ -935,16 +1123,21 @@ class SniperBotApp {
     }
     
     clearTransactions() {
-        this.transactions = [];
-        this.updateTransactionsTable();
-        this.addLog('Cleared transactions table', 'info');
-        this.showToast('Transactions table cleared', 'success');
+        const tableBody = document.querySelector('#transactions-table tbody');
+        if (tableBody) {
+            tableBody.innerHTML = '<tr><td colspan="6" class="no-data">No transactions yet</td></tr>';
+        }
+        this.showNotification('Transaction history cleared', 'info');
     }
     
     clearLogs() {
         this.logs = [];
         this.updateLogsTable();
         this.showToast('Logs table cleared', 'success');
+    }
+    
+    showNotification(message, type = 'info') {
+        this.showToast(message, type);
     }
 
     updateBotControls() {
@@ -970,9 +1163,354 @@ class SniperBotApp {
             statusDot.className = 'status-dot stopped';
         }
     }
+
+    // Add new functions for positions and transactions
+    async fetchPositions() {
+        try {
+            console.log('🔍 Fetching positions...');
+            const response = await fetch('/api/positions');
+            const data = await response.json();
+            
+            console.log('📊 Positions API response:', data);
+            
+            if (data.success) {
+                console.log('✅ Positions data received:', data.positions);
+                this.updatePositionsTable(data.positions);
+            } else {
+                console.error('❌ Failed to fetch positions:', data.error);
+            }
+        } catch (error) {
+            console.error('❌ Error fetching positions:', error);
+        }
+    }
+    
+    async fetchTransactions() {
+        try {
+            console.log('🔍 Fetching transactions...');
+            const response = await fetch('/api/transactions?limit=50');
+            const data = await response.json();
+            
+            console.log('📊 Transactions API response:', data);
+            
+            if (data.success) {
+                console.log('✅ Transactions data received:', data.transactions);
+                this.updateTransactionsTable(data.transactions);
+            } else {
+                console.error('❌ Failed to fetch transactions:', data.error);
+            }
+        } catch (error) {
+            console.error('❌ Error fetching transactions:', error);
+        }
+    }
+    
+    updatePositionsTable(positions) {
+        console.log('🔍 updatePositionsTable called with:', positions);
+        
+        // Check what elements exist
+        const tableBody = document.querySelector('#positions-table tbody');
+        const tableContainer = document.querySelector('#positions-table');
+        const positionsContent = document.querySelector('#positions-content');
+        
+        console.log('🔍 HTML Elements check:');
+        console.log('- #positions-table tbody:', tableBody);
+        console.log('- #positions-table:', tableContainer);
+        console.log('- #positions-content:', positionsContent);
+        
+        if (!tableBody) {
+            console.error('❌ Could not find #positions-table tbody');
+            console.log('🔍 Available elements with "positions" in ID:');
+            document.querySelectorAll('[id*="positions"]').forEach(el => {
+                console.log('- Found element:', el.id, el);
+            });
+            return;
+        }
+        
+        tableBody.innerHTML = '';
+        
+        if (!positions || positions.length === 0) {
+            console.log('📝 No positions to display');
+            tableBody.innerHTML = '<tr><td colspan="7" class="no-data">No active positions</td></tr>';
+            return;
+        }
+        
+        console.log(`📊 Displaying ${positions.length} positions`);
+        
+        let totalInvested = 0;
+        let totalPnl = 0;
+        
+        positions.forEach((position, index) => {
+            console.log(`📋 Position ${index}:`, position);
+            
+            const row = document.createElement('tr');
+            
+            // Calculate P&L - handle different data structures
+            let currentValue = 0;
+            let pnl = 0;
+            let pnlPercent = 0;
+            
+            if (position.current_price && position.token_amount) {
+                currentValue = position.token_amount * position.current_price;
+                pnl = currentValue - (position.sol_amount || 0);
+                pnlPercent = position.sol_amount > 0 ? (pnl / position.sol_amount) * 100 : 0;
+            }
+            
+            totalInvested += position.sol_amount || 0;
+            totalPnl += pnl;
+            
+            row.innerHTML = `
+                <td>
+                    <div class="token-info">
+                        <span class="token-symbol">${position.token_symbol || position.token_name || 'Unknown'}</span>
+                        <span class="token-mint">${this.truncateAddress(position.mint || position.token_mint || '')}</span>
+                    </div>
+                </td>
+                <td>${position.entry_price ? `$${position.entry_price.toFixed(6)}` : 'N/A'}</td>
+                <td>${position.current_price ? `$${position.current_price.toFixed(6)}` : 'N/A'}</td>
+                <td>${(position.token_amount || 0).toLocaleString()}</td>
+                <td class="${pnl >= 0 ? 'positive' : 'negative'}">
+                    ${pnlPercent.toFixed(2)}% (${pnl.toFixed(4)} SOL)
+                </td>
+                <td><span class="status active">Active</span></td>
+                <td>
+                    <button class="btn-sell" onclick="app.sellPosition('${position.mint || position.token_mint}')">Sell</button>
+                </td>
+            `;
+            
+            tableBody.appendChild(row);
+        });
+        
+        // Update summary
+        const summaryElement = document.querySelector('.positions-summary');
+        if (summaryElement) {
+            summaryElement.innerHTML = `
+                Total Invested: ${totalInvested.toFixed(4)} SOL | 
+                P&L: <span class="${totalPnl >= 0 ? 'positive' : 'negative'}">${totalPnl.toFixed(4)} SOL</span>
+            `;
+        }
+        
+        console.log('✅ Positions table updated successfully');
+    }
+    
+    updateTransactionsTable(transactions) {
+        console.log('🔍 updateTransactionsTable called with:', transactions);
+        
+        // Check what elements exist
+        const tableBody = document.querySelector('#transactions-table tbody');
+        const tableContainer = document.querySelector('#transactions-table');
+        const transactionsContent = document.querySelector('#transactions-content');
+        
+        console.log('🔍 HTML Elements check:');
+        console.log('- #transactions-table tbody:', tableBody);
+        console.log('- #transactions-table:', tableContainer);
+        console.log('- #transactions-content:', transactionsContent);
+        
+        if (!tableBody) {
+            console.error('❌ Could not find #transactions-table tbody');
+            console.log('🔍 Available elements with "transactions" in ID:');
+            document.querySelectorAll('[id*="transactions"]').forEach(el => {
+                console.log('- Found element:', el.id, el);
+            });
+            return;
+        }
+        
+        tableBody.innerHTML = '';
+        
+        if (!transactions || transactions.length === 0) {
+            console.log('📝 No transactions to display');
+            tableBody.innerHTML = '<tr><td colspan="6" class="no-data">No transactions yet</td></tr>';
+            return;
+        }
+        
+        console.log(`📊 Displaying ${transactions.length} transactions`);
+        
+        transactions.forEach((tx, index) => {
+            console.log(`📋 Transaction ${index}:`, tx);
+            
+            const row = document.createElement('tr');
+            
+            // Use the processed transaction data structure
+            const timestamp = tx.timestamp || Date.now() / 1000;
+            const date = new Date(timestamp * 1000).toLocaleString();
+            
+            // Extract transaction details from processed data
+            const txType = tx.type || 'unknown';
+            const amount = tx.amount || 0; // Already in correct units
+            const fee = tx.fee || 0; // Already in SOL
+            const signature = tx.signature || '';
+            const tokenSymbol = tx.token_symbol || 'SOL';
+            
+            // Format the transaction type for display
+            const displayType = txType.replace('_', ' ').toUpperCase();
+            
+            row.innerHTML = `
+                <td>
+                    <div class="transaction-info">
+                        <span class="tx-type ${txType}">${displayType}</span>
+                        <span class="tx-symbol">${tokenSymbol}</span>
+                    </div>
+                </td>
+                <td>${amount.toFixed(6)}</td>
+                <td>${fee.toFixed(6)} SOL</td>
+                <td>${date}</td>
+                <td>
+                    <a href="https://solscan.io/tx/${signature}" target="_blank" class="tx-link">
+                        ${this.truncateAddress(signature)}
+                    </a>
+                </td>
+                <td>
+                    <span class="status ${txType}">${displayType}</span>
+                </td>
+            `;
+            
+            tableBody.appendChild(row);
+        });
+        
+        console.log('✅ Transactions table updated successfully');
+    }
+    
+    async sellPosition(mint) {
+        try {
+            const response = await fetch('/api/trade/sell', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ mint })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                this.showNotification('Position sold successfully', 'success');
+                this.fetchPositions(); // Refresh positions
+            } else {
+                this.showNotification(`Sell failed: ${data.error}`, 'error');
+            }
+        } catch (error) {
+            console.error('Error selling position:', error);
+            this.showNotification('Error selling position', 'error');
+        }
+    }
+
+    // Test method to verify tab switching works correctly
+    testTabSwitching() {
+        console.log('🧪 Testing tab switching...');
+        
+        const tabs = ['monitoring', 'positions', 'transactions', 'logs'];
+        
+        tabs.forEach((tabName, index) => {
+            setTimeout(() => {
+                console.log(`🧪 Testing tab: ${tabName}`);
+                this.switchTab(tabName);
+                
+                // Check if only the active tab is visible
+                setTimeout(() => {
+                    document.querySelectorAll('.tab-content').forEach(content => {
+                        const isActive = content.classList.contains('active');
+                        const isVisible = content.style.display !== 'none' && content.style.visibility !== 'hidden';
+                        const isPositioned = content.style.position !== 'absolute';
+                        console.log(`- ${content.id}: active=${isActive}, visible=${isVisible}, positioned=${isPositioned}`);
+                    });
+                }, 100);
+            }, index * 2000); // Test each tab with 2 second delay
+        });
+    }
+
+    // Simple test function to run in console
+    testTabs() {
+        console.log('🧪 Running tab test...');
+        this.switchTab('positions');
+        setTimeout(() => this.switchTab('transactions'), 1000);
+        setTimeout(() => this.switchTab('logs'), 2000);
+        setTimeout(() => this.switchTab('monitoring'), 3000);
+    }
+    
+    // Quick test function
+    quickTest() {
+        console.log('🧪 Quick tab test...');
+        console.log('Current active tab:', document.querySelector('.tab-content.active')?.id);
+        this.switchTab('positions');
+        setTimeout(() => {
+            console.log('After switch - active tab:', document.querySelector('.tab-content.active')?.id);
+            console.log('Positions content display:', document.getElementById('positions-content').style.display);
+            console.log('Positions content classList:', document.getElementById('positions-content').classList.toString());
+        }, 100);
+    }
+    
+    // Comprehensive debug function
+    debugTabs() {
+        console.log('🔍 === COMPREHENSIVE TAB DEBUG ===');
+        
+        // Check all tab content elements
+        document.querySelectorAll('.tab-content').forEach(content => {
+            const computedStyle = window.getComputedStyle(content);
+            console.log(`📋 ${content.id}:`);
+            console.log(`  - display: ${computedStyle.display}`);
+            console.log(`  - visibility: ${computedStyle.visibility}`);
+            console.log(`  - position: ${computedStyle.position}`);
+            console.log(`  - has active class: ${content.classList.contains('active')}`);
+            console.log(`  - inline display: ${content.style.display}`);
+            console.log(`  - inline visibility: ${content.style.visibility}`);
+        });
+        
+        // Check all tab buttons
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            console.log(`🔘 Tab button [data-tab="${btn.dataset.tab}"]: has active class: ${btn.classList.contains('active')}`);
+        });
+        
+        // Check CSS rules
+        console.log('🎨 Checking CSS rules...');
+        const styleSheets = Array.from(document.styleSheets);
+        styleSheets.forEach((sheet, index) => {
+            try {
+                const rules = Array.from(sheet.cssRules || sheet.rules);
+                rules.forEach(rule => {
+                    if (rule.selectorText && rule.selectorText.includes('.tab-content')) {
+                        console.log(`📝 CSS Rule in sheet ${index}: ${rule.selectorText} { display: ${rule.style.display} }`);
+                    }
+                });
+            } catch (e) {
+                console.log(`⚠️ Could not access rules from sheet ${index}:`, e.message);
+            }
+        });
+        
+        console.log('🔍 === END DEBUG ===');
+    }
+    
+    // Force display test
+    forceDisplayTest() {
+        console.log('🧪 Force display test...');
+        
+        // Hide all tabs first
+        document.querySelectorAll('.tab-content').forEach(content => {
+            content.style.display = 'none';
+            content.classList.remove('active');
+        });
+        
+        // Force show positions tab
+        const positionsContent = document.getElementById('positions-content');
+        if (positionsContent) {
+            positionsContent.style.display = 'flex';
+            positionsContent.classList.add('active');
+            console.log('✅ Forced positions tab to display: flex');
+        }
+        
+        // Update tab button
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        
+        const positionsTab = document.querySelector('[data-tab="positions"]');
+        if (positionsTab) {
+            positionsTab.classList.add('active');
+        }
+        
+        console.log('✅ Force display test completed');
+    }
 }
 
 // Initialize the app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    window.sniperBot = new SniperBotApp();
+    window.app = new SniperBotApp();
+    window.sniperBot = window.app; // Keep both references for compatibility
 }); 

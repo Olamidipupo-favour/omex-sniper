@@ -1,0 +1,34 @@
+{
+    "amount": 0.01984,               // Amount of SOL transferred (in SOL)
+    "fee": 8e-05,                    // Fee paid (in SOL)
+    "raw_data": {
+      "accountData": [
+        {
+          "account": "FQE…ELnL",
+          "nativeBalanceChange": -19920000,   // in lamports = –0.01992 SOL
+          …
+        },
+        {
+          "account": "952…DnL",
+          "nativeBalanceChange": 19840000,    // in lamports = +0.01984 SOL
+          …
+        }
+      ],
+      "description": "… transferred 0.01984 SOL …",
+      "fee": 80000,                     // in lamports = 0.00008 SOL
+      "nativeTransfers": [
+        {
+          "amount": 19840000,            // in lamports = +0.01984 SOL
+          "fromUserAccount": "...",
+          "toUserAccount": "..."
+        }
+      ],
+      "signature": "...",
+      "type": "TRANSFER",
+      "timestamp": 1754399220
+    },
+    "signature": "...",
+    "timestamp": 1754399220,
+    "type": "sol_transfer"
+  }
+  
