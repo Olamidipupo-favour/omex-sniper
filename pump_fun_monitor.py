@@ -96,6 +96,7 @@ class PumpPortalMonitor:
         self.callback_processor_running = True
         
         async def process_callbacks():
+            logger.info("🔄 Callback processor loop started")
             while self.callback_processor_running:
                 try:
                     # Check for callbacks in the queue
@@ -103,14 +104,22 @@ class PumpPortalMonitor:
                         callback_info = self.callback_queue.get_nowait()
                         callback_func, args = callback_info
                         
+                        logger.info(f"📤 Processing callback: {callback_func.__name__} with args: {args}")
+                        
                         if asyncio.iscoroutinefunction(callback_func):
+                            logger.info(f"🔄 Executing async callback: {callback_func.__name__}")
                             await callback_func(*args)
+                            logger.info(f"✅ Async callback completed: {callback_func.__name__}")
                         else:
+                            logger.info(f"🔄 Executing sync callback: {callback_func.__name__}")
                             callback_func(*args)
+                            logger.info(f"✅ Sync callback completed: {callback_func.__name__}")
                     else:
                         await asyncio.sleep(0.1)  # Small delay to prevent busy waiting
                 except Exception as e:
                     logger.error(f"❌ Error processing callback: {e}")
+                    import traceback
+                    logger.error(f"❌ Callback error traceback: {traceback.format_exc()}")
                     await asyncio.sleep(0.1)
         
         # Start the callback processor
@@ -583,12 +592,17 @@ class PumpPortalMonitor:
             # Call trade callback
             if self.trade_callback:
                 logger.info("📡 Calling trade callback...")
+                logger.info(f"📊 Trade callback function: {self.trade_callback.__name__}")
+                logger.info(f"📊 Trade callback is async: {asyncio.iscoroutinefunction(self.trade_callback)}")
+                
                 if asyncio.iscoroutinefunction(self.trade_callback):
                     # For async callbacks, add to queue for processing in main event loop
+                    logger.info("📤 Adding async callback to queue...")
                     self.callback_queue.put((self.trade_callback, (trade_info,)))
-                    logger.info("📤 Added async callback to queue")
+                    logger.info(f"📤 Added async callback to queue. Queue size: {self.callback_queue.qsize()}")
                 else:
                     # Synchronous callback - call directly
+                    logger.info("🔄 Calling sync callback directly...")
                     self.trade_callback(trade_info)
                 logger.info("✅ Trade callback queued/completed")
             else:

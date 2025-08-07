@@ -130,6 +130,9 @@ class SniperBotApp {
             });
             
             this.socket.on('position_update', (data) => {
+                console.log('📡 WebSocket: Position update received:', data);
+                console.log('📊 Position update action:', data.action);
+                console.log('📊 Position update mint:', data.mint);
                 this.handlePositionUpdate(data);
             });
             
@@ -142,6 +145,9 @@ class SniperBotApp {
             });
             
             this.socket.on('price_update', (data) => {
+                console.log('📡 WebSocket: Price update received:', data);
+                console.log('📊 Price update mint:', data.mint);
+                console.log('📊 Price update current_price:', data.current_price);
                 this.handlePriceUpdate(data);
             });
             
@@ -502,16 +508,105 @@ class SniperBotApp {
     }
     
     handlePositionUpdate(data) {
-        // Update positions table if we're on the positions tab
-        if (document.getElementById('positions-content').style.display !== 'none') {
-            this.fetchPositions();
-        }
+        console.log('📱 Position update received:', data);
+        console.log('📊 Action type:', data.action);
         
-        // Show notification for significant updates
-        if (data.action === 'sell') {
+        // Find existing position
+        const existingIndex = this.positions.findIndex(p => p.mint === data.mint || p.token_mint === data.mint);
+        let position;
+        
+        if (data.action === 'buy') {
+            // New position created from buy_token
+            console.log('🆕 Buy action received:', data);
+            
+            if (existingIndex === -1) {
+                // Create new position with initial data (entry_price and token_amount will be 0)
+                position = {
+                    mint: data.mint,
+                    token_mint: data.mint,
+                    token_symbol: data.token_symbol || 'Unknown',
+                    token_name: data.token_name || 'Unknown',
+                    entry_price: 0,  // Will be updated by metadata_update
+                    current_price: 0,
+                    token_amount: 0,  // Will be updated by metadata_update
+                    sol_amount: data.sol_amount || 0,
+                    current_pnl: 0,
+                    current_pnl_percent: 0,
+                    is_active: true,
+                    entry_timestamp: Date.now() / 1000
+                };
+                
+                this.positions.push(position);
+                console.log('✅ Created new position from buy action:', position);
+            } else {
+                // Position already exists, update only non-critical data
+                position = this.positions[existingIndex];
+                position.token_symbol = data.token_symbol || position.token_symbol;
+                position.token_name = data.token_name || position.token_name;
+                position.sol_amount = data.sol_amount || position.sol_amount;
+                // DO NOT update entry_price or token_amount from buy action
+                console.log('✅ Updated existing position from buy action (no entry_price/token_amount update):', position);
+            }
+            
+            // Show success notification
+            this.showToast(`Position created for ${data.token_symbol || 'Unknown'}`, 'success');
+            
+        } else if (data.action === 'metadata_update') {
+            // Position metadata updated from WebSocket (real data)
+            console.log('📝 Metadata update received:', data);
+            
+            if (existingIndex === -1) {
+                // Create new position if it doesn't exist
+                position = {
+                    mint: data.mint,
+                    token_mint: data.mint,
+                    token_symbol: data.token_symbol || 'Unknown',
+                    token_name: data.token_name || 'Unknown',
+                    entry_price: data.entry_price || 0,
+                    current_price: 0,
+                    token_amount: data.token_amount || 0,
+                    sol_amount: 0,  // Will be updated by buy action if it comes later
+                    current_pnl: 0,
+                    current_pnl_percent: 0,
+                    is_active: true,
+                    entry_timestamp: Date.now() / 1000
+                };
+                
+                this.positions.push(position);
+                console.log('✅ Created new position from metadata_update:', position);
+            } else {
+                // Update existing position with real data
+                position = this.positions[existingIndex];
+                position.token_symbol = data.token_symbol || position.token_symbol;
+                position.token_name = data.token_name || position.token_name;
+                position.entry_price = data.entry_price || position.entry_price;  // Only metadata_update can update this
+                position.token_amount = data.token_amount || position.token_amount;  // Only metadata_update can update this
+                console.log('✅ Updated existing position from metadata_update (with real data):', position);
+            }
+            
+        } else if (data.action === 'sell') {
+            // Position sold
+            console.log('💸 Position sold:', data);
+            
+            // Remove from positions array
+            this.positions = this.positions.filter(p => p.mint !== data.mint && p.token_mint !== data.mint);
+            
+            // Show notification
             const pnlText = data.pnl_percent ? ` (${data.pnl_percent.toFixed(2)}%)` : '';
             this.showNotification(`Position sold${pnlText}`, 'success');
         }
+        
+        // Always update the positions table and header stats
+        this.updatePositionsTable();
+        this.updateTotalPnL();
+        
+        // Update header stats
+        const activePositionsElement = document.getElementById('activePositions');
+        if (activePositionsElement) {
+            activePositionsElement.textContent = this.positions.length;
+        }
+        
+        console.log('📊 Current positions count:', this.positions.length);
     }
     
     handleTransaction(data) {
@@ -579,35 +674,29 @@ class SniperBotApp {
     }
     
     handlePriceUpdate(data) {
-        console.log('Price update:', data);
+        console.log('💰 Price update received:', data);
         
-        // Update position P&L in real-time
-        const positionRow = document.querySelector(`[data-mint="${data.mint}"]`);
-        if (positionRow) {
-            const pnlCell = positionRow.querySelector('.col-pnl');
-            const priceCell = positionRow.querySelector('.col-price');
+        // Find and update the position in our local array
+        const position = this.positions.find(p => p.mint === data.mint || p.token_mint === data.mint);
+        if (position) {
+            position.current_price = data.current_price;
+            position.current_pnl = data.current_pnl;
+            position.current_pnl_percent = data.current_pnl_percent;
             
-            if (pnlCell) {
-                const pnlClass = data.current_pnl_percent >= 0 ? 'positive' : 'negative';
-                pnlCell.innerHTML = `
-                    <span class="pnl ${pnlClass}">
-                        ${data.current_pnl_percent >= 0 ? '+' : ''}${data.current_pnl_percent.toFixed(2)}%
-                    </span>
-                    <div class="pnl-absolute">${data.current_pnl >= 0 ? '+' : ''}${data.current_pnl.toFixed(6)} SOL</div>
-                `;
-            }
+            console.log('✅ Updated position with price data:', position);
             
-            if (priceCell) {
-                priceCell.textContent = `$${data.current_price.toFixed(8)}`;
+            // Update the positions table to reflect the new price
+            this.updatePositionsTable();
+            
+            // Update total P&L
+            this.updateTotalPnL();
+            
+            // Add log entry for significant price changes
+            if (Math.abs(data.current_pnl_percent) > 5) {
+                this.addLog(`💰 ${data.token_symbol}: ${data.current_pnl_percent >= 0 ? '+' : ''}${data.current_pnl_percent.toFixed(2)}% ($${data.current_price.toFixed(8)})`, 'info');
             }
-        }
-        
-        // Update total P&L
-        this.updateTotalPnL();
-        
-        // Add log entry for significant price changes
-        if (Math.abs(data.current_pnl_percent) > 5) {
-            this.addLog(`💰 ${data.token_symbol}: ${data.current_pnl_percent >= 0 ? '+' : ''}${data.current_pnl_percent.toFixed(2)}% ($${data.current_price.toFixed(8)})`, 'info');
+        } else {
+            console.warning('⚠️ Price update for unknown position:', data.mint);
         }
     }
     
@@ -715,45 +804,88 @@ class SniperBotApp {
     }
     
     updatePositionsTable() {
-        const tbody = document.querySelector('#positionsTableBody');
-        if (!tbody) return;
+        console.log('🔍 updatePositionsTable called with local positions array');
+        console.log('📊 Current positions:', this.positions);
+        console.log('📊 Positions count:', this.positions.length);
         
-        tbody.innerHTML = '';
-        
-        if (this.positions.length === 0) {
-            tbody.innerHTML = '<div class="empty-state"><i class="fas fa-briefcase"></i><p>No active positions</p></div>';
+        const tbody = document.querySelector('#positions-table tbody');
+        if (!tbody) {
+            console.error('❌ Could not find #positions-table tbody');
+            console.log('🔍 Available elements with "positions" in ID:');
+            document.querySelectorAll('[id*="positions"]').forEach(el => {
+                console.log('- Found element:', el.id, el);
+            });
             return;
         }
         
-        this.positions.forEach(position => {
-            const row = document.createElement('div');
-            row.className = 'position-row';
-            const pnlClass = position.current_pnl >= 0 ? 'profit' : 'loss';
+        console.log('✅ Found positions table body, updating...');
+        tbody.innerHTML = '';
+        
+        if (this.positions.length === 0) {
+            console.log('📝 No positions to display');
+            tbody.innerHTML = '<tr><td colspan="7" class="no-data">No active positions</td></tr>';
+            return;
+        }
+        
+        console.log(`📊 Displaying ${this.positions.length} positions`);
+        
+        let totalInvested = 0;
+        let totalPnl = 0;
+        
+        this.positions.forEach((position, index) => {
+            console.log(`📋 Position ${index}:`, position);
+            
+            const row = document.createElement('tr');
+            
+            // Calculate P&L
+            let currentValue = 0;
+            let pnl = 0;
+            let pnlPercent = 0;
+            
+            if (position.current_price && position.token_amount) {
+                currentValue = position.token_amount * position.current_price;
+                pnl = currentValue - (position.sol_amount || 0);
+                pnlPercent = position.sol_amount > 0 ? (pnl / position.sol_amount) * 100 : 0;
+            }
+            
+            totalInvested += position.sol_amount || 0;
+            totalPnl += pnl;
             
             row.innerHTML = `
-                <div class="col-token">
+                <td>
                     <div class="token-info">
-                        <strong>${position.token_symbol}</strong>
-                        <small>${position.token_name}</small>
+                        <span class="token-symbol">${position.token_symbol || 'Unknown'}</span>
+                        <span class="token-mint">${this.truncateAddress(position.mint || position.token_mint || '')}</span>
                     </div>
-                </div>
-                <div class="col-entry">$${position.entry_price.toFixed(8)}</div>
-                <div class="col-current">$${position.current_price.toFixed(8)}</div>
-                <div class="col-amount">${position.token_amount.toLocaleString()}</div>
-                <div class="col-pnl ${pnlClass}">
-                    ${position.current_pnl >= 0 ? '+' : ''}${position.current_pnl.toFixed(4)} SOL
-                    <br>
-                    <small>(${position.current_pnl_percent >= 0 ? '+' : ''}${position.current_pnl_percent.toFixed(1)}%)</small>
-                </div>
-                <div class="col-status">${position.is_active ? 'Active' : 'Closed'}</div>
-                <div class="col-action">
-                    ${position.is_active ? `<button class="btn btn-small sell-btn" data-mint="${position.token_mint}">
-                        <i class="fas fa-sign-out-alt"></i> Sell
-                    </button>` : '-'}
-                </div>
+                </td>
+                <td>${position.entry_price ? `$${position.entry_price.toFixed(6)}` : 'N/A'}</td>
+                <td>${position.current_price ? `$${position.current_price.toFixed(6)}` : 'N/A'}</td>
+                <td>${(position.token_amount || 0).toLocaleString()}</td>
+                <td class="${pnl >= 0 ? 'positive' : 'negative'}">
+                    ${pnlPercent.toFixed(2)}% (${pnl.toFixed(4)} SOL)
+                </td>
+                <td><span class="status active">Active</span></td>
+                <td>
+                    <button class="btn-sell" onclick="app.sellPosition('${position.mint || position.token_mint}')">Sell</button>
+                </td>
             `;
+            
             tbody.appendChild(row);
+            console.log(`✅ Added row for position ${index}: ${position.token_symbol}`);
         });
+        
+        // Update summary
+        const summaryElement = document.querySelector('.positions-summary');
+        if (summaryElement) {
+            summaryElement.innerHTML = `
+                Total Invested: ${totalInvested.toFixed(4)} SOL | 
+                P&L: <span class="${totalPnl >= 0 ? 'positive' : 'negative'}">${totalPnl.toFixed(4)} SOL</span>
+            `;
+            console.log('✅ Updated positions summary');
+        }
+        
+        console.log('✅ Positions table updated successfully');
+        console.log('📊 Final table content length:', tbody.innerHTML.length);
     }
     
     updateTransactionsTable() {
@@ -916,9 +1048,11 @@ class SniperBotApp {
             console.error('❌ Could not find tab button for:', tabName);
         }
         
-        // Load data for specific tabs
+        // Load data for specific tabs - but don't fetch from API for positions
         if (tabName === 'positions') {
-            this.fetchPositions();
+            // Use local positions array instead of fetching from API
+            console.log('📊 Using local positions array for positions tab');
+            this.updatePositionsTable(); // This will use the local this.positions array
         } else if (tabName === 'transactions') {
             this.fetchTransactions();
         } else if (tabName === 'logs') {
@@ -1175,22 +1309,10 @@ class SniperBotApp {
 
     // Add new functions for positions and transactions
     async fetchPositions() {
-        try {
-            console.log('🔍 Fetching positions...');
-            const response = await fetch('/api/positions');
-            const data = await response.json();
-            
-            console.log('📊 Positions API response:', data);
-            
-            if (data.success) {
-                console.log('✅ Positions data received:', data.positions);
-                this.updatePositionsTable(data.positions);
-            } else {
-                console.error('❌ Failed to fetch positions:', data.error);
-            }
-        } catch (error) {
-            console.error('❌ Error fetching positions:', error);
-        }
+        // This function is no longer needed since we use local positions array
+        console.log('⚠️ fetchPositions() called but we use local positions array instead');
+        console.log('📊 Current local positions:', this.positions);
+        this.updatePositionsTable(); // Use local array
     }
     
     async fetchTransactions() {
@@ -1210,94 +1332,6 @@ class SniperBotApp {
         } catch (error) {
             console.error('❌ Error fetching transactions:', error);
         }
-    }
-    
-    updatePositionsTable(positions) {
-        console.log('🔍 updatePositionsTable called with:', positions);
-        
-        // Check what elements exist
-        const tableBody = document.querySelector('#positions-table tbody');
-        const tableContainer = document.querySelector('#positions-table');
-        const positionsContent = document.querySelector('#positions-content');
-        
-        console.log('🔍 HTML Elements check:');
-        console.log('- #positions-table tbody:', tableBody);
-        console.log('- #positions-table:', tableContainer);
-        console.log('- #positions-content:', positionsContent);
-        
-        if (!tableBody) {
-            console.error('❌ Could not find #positions-table tbody');
-            console.log('🔍 Available elements with "positions" in ID:');
-            document.querySelectorAll('[id*="positions"]').forEach(el => {
-                console.log('- Found element:', el.id, el);
-            });
-            return;
-        }
-        
-        tableBody.innerHTML = '';
-        
-        if (!positions || positions.length === 0) {
-            console.log('📝 No positions to display');
-            tableBody.innerHTML = '<tr><td colspan="7" class="no-data">No active positions</td></tr>';
-            return;
-        }
-        
-        console.log(`📊 Displaying ${positions.length} positions`);
-        
-        let totalInvested = 0;
-        let totalPnl = 0;
-        
-        positions.forEach((position, index) => {
-            console.log(`📋 Position ${index}:`, position);
-            
-            const row = document.createElement('tr');
-            
-            // Calculate P&L - handle different data structures
-            let currentValue = 0;
-            let pnl = 0;
-            let pnlPercent = 0;
-            
-            if (position.current_price && position.token_amount) {
-                currentValue = position.token_amount * position.current_price;
-                pnl = currentValue - (position.sol_amount || 0);
-                pnlPercent = position.sol_amount > 0 ? (pnl / position.sol_amount) * 100 : 0;
-            }
-            
-            totalInvested += position.sol_amount || 0;
-            totalPnl += pnl;
-            
-            row.innerHTML = `
-                <td>
-                    <div class="token-info">
-                        <span class="token-symbol">${position.token_symbol || position.token_name || 'Unknown'}</span>
-                        <span class="token-mint">${this.truncateAddress(position.mint || position.token_mint || '')}</span>
-                    </div>
-                </td>
-                <td>${position.entry_price ? `$${position.entry_price.toFixed(6)}` : 'N/A'}</td>
-                <td>${position.current_price ? `$${position.current_price.toFixed(6)}` : 'N/A'}</td>
-                <td>${(position.token_amount || 0).toLocaleString()}</td>
-                <td class="${pnl >= 0 ? 'positive' : 'negative'}">
-                    ${pnlPercent.toFixed(2)}% (${pnl.toFixed(4)} SOL)
-                </td>
-                <td><span class="status active">Active</span></td>
-                <td>
-                    <button class="btn-sell" onclick="app.sellPosition('${position.mint || position.token_mint}')">Sell</button>
-                </td>
-            `;
-            
-            tableBody.appendChild(row);
-        });
-        
-        // Update summary
-        const summaryElement = document.querySelector('.positions-summary');
-        if (summaryElement) {
-            summaryElement.innerHTML = `
-                Total Invested: ${totalInvested.toFixed(4)} SOL | 
-                P&L: <span class="${totalPnl >= 0 ? 'positive' : 'negative'}">${totalPnl.toFixed(4)} SOL</span>
-            `;
-        }
-        
-        console.log('✅ Positions table updated successfully');
     }
     
     updateTransactionsTable(transactions) {
@@ -1391,7 +1425,8 @@ class SniperBotApp {
             
             if (data.success) {
                 this.showNotification('Position sold successfully', 'success');
-                this.fetchPositions(); // Refresh positions
+                // Don't fetch from API - the WebSocket will update the local array
+                console.log('✅ Sell successful, waiting for WebSocket update');
             } else {
                 this.showNotification(`Sell failed: ${data.error}`, 'error');
             }

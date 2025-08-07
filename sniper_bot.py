@@ -692,6 +692,9 @@ class SniperBot:
                         
                         # Send price update to frontend
                         if self.ui_callback:
+                            logger.info(f"💰 Sending price update to UI for {mint_address}")
+                            logger.info(f"📊 Price data: current_price={price}, pnl_percent={position.current_pnl_percent}")
+                            
                             self.ui_callback('price_update', {
                                 'mint': mint_address,
                                 'current_price': price,
@@ -702,6 +705,9 @@ class SniperBot:
                                 'token_symbol': position.token_symbol,
                                 'token_name': position.token_name
                             })
+                            logger.info(f"💰 Price update sent to UI for {mint_address}")
+                        else:
+                            logger.warning(f"⚠️ No UI callback available for price update")
                         
                         # Check for take profit or stop loss
                         settings = config_manager.config.bot_settings
@@ -879,6 +885,13 @@ class SniperBot:
     async def _handle_pumpportal_trade(self, trade_info):
         """Handle trade events from PumpPortal WebSocket"""
         try:
+            logger.info(f"🔄 _handle_pumpportal_trade called with trade_info: {trade_info}")
+            logger.info(f"📊 Trade mint: {trade_info.mint}")
+            logger.info(f"📊 Trade trader: {trade_info.trader}")
+            logger.info(f"📊 Trade is_buy: {trade_info.is_buy}")
+            logger.info(f"📊 Trade amount: {trade_info.amount}")
+            logger.info(f"📊 Trade token_amount: {trade_info.token_amount}")
+            
             # Convert TradeInfo to dictionary for compatibility with existing code
             trade_data = {
                 'mint': trade_info.mint,
@@ -944,6 +957,9 @@ class SniperBot:
                         
                         # Update UI with the real data
                         if self.ui_callback:
+                            logger.info(f"📱 Sending metadata update to UI for {mint}")
+                            logger.info(f"📊 Update data: entry_price={position.entry_price}, token_amount={position.token_amount}, symbol={position.token_symbol}")
+                            
                             self.ui_callback('position_update', {
                                 'action': 'metadata_update',
                                 'mint': mint,
@@ -953,6 +969,59 @@ class SniperBot:
                                 'token_name': position.token_name
                             })
                             logger.info(f"📱 Sent position update to UI for {mint}")
+                        else:
+                            logger.warning(f"⚠️ No UI callback available for position update")
+                
+                else:
+                    # We don't have a position yet, create one from the trade data
+                    logger.info(f"🆕 Creating new position from our own trade for {mint}")
+                    
+                    if tx_type == 'buy':
+                        # Extract data from our buy trade
+                        sol_amount = trade_data['solAmount']
+                        token_amount = trade_data['tokenAmount']
+                        
+                        # Calculate entry price
+                        entry_price = sol_amount / token_amount if token_amount > 0 else 0.0
+                        
+                        # Use token metadata from the trade data
+                        token_symbol = trade_info.token_symbol
+                        token_name = trade_info.token_name
+                        
+                        # Create position with real data from WebSocket
+                        position = Position(
+                            token_mint=mint,
+                            token_symbol=token_symbol or "Unknown",
+                            token_name=token_name or "Unknown",
+                            entry_price=entry_price,
+                            entry_timestamp=int(time.time()),
+                            sol_amount=sol_amount,
+                            token_amount=token_amount
+                        )
+                        
+                        self.positions[mint] = position
+                        
+                        logger.info(f"✅ Created position from WebSocket trade: {position}")
+                        
+                        # Send position creation to UI
+                        if self.ui_callback:
+                            logger.info(f"📱 Sending position creation to UI for {mint}")
+                            
+                            self.ui_callback('position_update', {
+                                'action': 'buy',
+                                'mint': mint,
+                                'sol_amount': sol_amount,
+                                'token_amount': token_amount,
+                                'entry_price': entry_price,
+                                'token_symbol': token_symbol or "Unknown",
+                                'token_name': token_name or "Unknown"
+                            })
+                            logger.info(f"📱 Sent position creation to UI for {mint}")
+                        else:
+                            logger.warning(f"⚠️ No UI callback available for position creation")
+                        
+                        # Start price monitoring for this token
+                        # await self._start_price_monitoring_for_token(mint)
                 
                 return  # Don't process our own trades for buy counting
             

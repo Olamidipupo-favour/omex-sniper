@@ -33,6 +33,12 @@ bot = SniperBot()
 bot_thread = None
 loop = None
 
+# Set up the trade callback for the bot's monitor
+bot.monitor.set_trade_callback(bot._handle_pumpportal_trade)
+logger.info("✅ Trade callback connected to bot monitor")
+logger.info(f"📊 Trade callback function: {bot._handle_pumpportal_trade.__name__}")
+logger.info(f"📊 Trade callback is async: {asyncio.iscoroutinefunction(bot._handle_pumpportal_trade)}")
+
 class WebSocketHandler:
     """Handle WebSocket communications"""
     
@@ -65,7 +71,10 @@ class WebSocketHandler:
     @staticmethod
     def emit_position_update(position_data: Dict[str, Any]):
         """Emit position update to frontend"""
+        logger.info(f"📡 WebSocket: Emitting position update to frontend")
+        logger.info(f"📋 WebSocket: Position data: {position_data}")
         socketio.emit('position_update', position_data)
+        logger.info(f"✅ WebSocket: Position update emitted successfully")
     
     @staticmethod
     def emit_transaction(transaction_data: Dict[str, Any]):
@@ -283,6 +292,11 @@ def start_monitoring():
                 'success': False,
                 'error': 'Bot is already running'
             }), 400
+        
+        # Verify trade callback is set up
+        logger.info("🔍 Verifying trade callback setup...")
+        logger.info(f"📊 Monitor trade callback: {bot.monitor.trade_callback}")
+        logger.info(f"📊 Monitor trade callback name: {bot.monitor.trade_callback.__name__ if bot.monitor.trade_callback else 'None'}")
         
         def run_bot():
             global loop
