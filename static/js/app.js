@@ -93,7 +93,14 @@ class SniperBotApp {
         // Manual trade buttons (will be added dynamically)
         document.addEventListener('click', (e) => {
             if (e.target.classList.contains('buy-btn')) {
-                this.buyToken(e.target.dataset.mint);
+                // Find the token data from the newTokens array
+                const mint = e.target.dataset.mint;
+                const token = this.newTokens.find(t => t.mint === mint);
+                if (token) {
+                    this.buyToken(mint, token.symbol, token.name);
+                } else {
+                    this.buyToken(mint, 'Unknown', 'Unknown');
+                }
             }
             if (e.target.classList.contains('sell-btn')) {
                 this.sellPosition(e.target.dataset.mint);
@@ -392,7 +399,7 @@ class SniperBotApp {
         }
     }
     
-    async buyToken(mint) {
+    async buyToken(mint, symbol, name) {
         if (!this.walletConnected) {
             this.showToast('Please connect your wallet first', 'warning');
             return;
@@ -408,7 +415,9 @@ class SniperBotApp {
                 },
                 body: JSON.stringify({
                     mint: mint,
-                    amount: parseFloat(document.getElementById('solAmount').value)
+                    amount: parseFloat(document.getElementById('solAmount').value),
+                    symbol: symbol,
+                    name: name
                 })
             });
             
@@ -416,7 +425,7 @@ class SniperBotApp {
             
             if (result.success) {
                 this.showToast('Buy order executed successfully!', 'success');
-                this.addLog(`Buy order executed for ${mint.slice(0, 8)}...`, 'success');
+                this.addLog(`Buy order executed for ${symbol} (${mint.slice(0, 8)}...)`, 'success');
             } else {
                 this.showToast(result.error || 'Buy order failed', 'error');
             }

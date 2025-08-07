@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Dict, Any, Callable, Optional
 from dataclasses import dataclass
 from config import PUMPPORTAL_WS_URL, PUMPPORTAL_API_URL
+from queue import Queue
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +56,13 @@ class TradeInfo:
     mint: str
     trader: str
     is_buy: bool
-    amount: float
+    amount: float  # SOL amount
+    token_amount: float  # Token amount
     price: float
     market_cap: float
     timestamp: int
+    token_symbol: str = ""  # Token symbol from trade data
+    token_name: str = ""    # Token name from trade data
     
 class PumpPortalMonitor:
     def __init__(self):
@@ -80,6 +84,44 @@ class PumpPortalMonitor:
         self.last_sol_price_update = 0
         self.sol_price_cache_duration = 300  # 5 minutes
         
+        # Callback queue for handling async callbacks from WebSocket threads
+        self.callback_queue = Queue()
+        self.callback_processor_running = False
+    
+    async def start_callback_processor(self):
+        """Start the callback processor to handle async callbacks from WebSocket threads"""
+        if self.callback_processor_running:
+            return
+        
+        self.callback_processor_running = True
+        
+        async def process_callbacks():
+            while self.callback_processor_running:
+                try:
+                    # Check for callbacks in the queue
+                    if not self.callback_queue.empty():
+                        callback_info = self.callback_queue.get_nowait()
+                        callback_func, args = callback_info
+                        
+                        if asyncio.iscoroutinefunction(callback_func):
+                            await callback_func(*args)
+                        else:
+                            callback_func(*args)
+                    else:
+                        await asyncio.sleep(0.1)  # Small delay to prevent busy waiting
+                except Exception as e:
+                    logger.error(f"❌ Error processing callback: {e}")
+                    await asyncio.sleep(0.1)
+        
+        # Start the callback processor
+        asyncio.create_task(process_callbacks())
+        logger.info("✅ Callback processor started")
+    
+    def stop_callback_processor(self):
+        """Stop the callback processor"""
+        self.callback_processor_running = False
+        logger.info("🛑 Callback processor stopped")
+    
     async def get_sol_price(self) -> float:
         """Fetch real-time SOL price from Pump.Fun API"""
         current_time = datetime.now().timestamp()
@@ -542,16 +584,13 @@ class PumpPortalMonitor:
             if self.trade_callback:
                 logger.info("📡 Calling trade callback...")
                 if asyncio.iscoroutinefunction(self.trade_callback):
-                    # For async callbacks, we need to schedule them in the event loop
-                    try:
-                        loop = asyncio.get_event_loop()
-                        asyncio.run_coroutine_threadsafe(self.trade_callback(trade_info), loop)
-                    except:
-                        # If no loop available, call synchronously
-                        asyncio.run(self.trade_callback(trade_info))
+                    # For async callbacks, add to queue for processing in main event loop
+                    self.callback_queue.put((self.trade_callback, (trade_info,)))
+                    logger.info("📤 Added async callback to queue")
                 else:
+                    # Synchronous callback - call directly
                     self.trade_callback(trade_info)
-                logger.info("✅ Trade callback completed")
+                logger.info("✅ Trade callback queued/completed")
             else:
                 logger.warning("⚠️ No trade callback set!")
                 
@@ -571,12 +610,20 @@ class PumpPortalMonitor:
             tx_type = data.get("txType", "").lower()
             is_buy = tx_type in ["buy", "swap"]
             
-            # Extract amount and price
+            # Extract amounts
             sol_amount = data.get("solAmount", 0.0)
             token_amount = data.get("tokenAmount", 0.0)
             
-            # Calculate price (SOL per token)
-            price = sol_amount / token_amount if token_amount > 0 else 0.0
+            # Calculate price using bonding curve data (more accurate)
+            v_sol_in_bonding_curve = data.get("vSolInBondingCurve", 0.0)
+            v_tokens_in_bonding_curve = data.get("vTokensInBondingCurve", 0.0)
+            
+            # Use bonding curve data for price calculation if available
+            if v_sol_in_bonding_curve > 0 and v_tokens_in_bonding_curve > 0:
+                price = v_sol_in_bonding_curve / v_tokens_in_bonding_curve
+            else:
+                # Fallback to transaction-based price
+                price = sol_amount / token_amount if token_amount > 0 else 0.0
             
             # Get market cap if available
             market_cap_sol = data.get("marketCapSol", 0.0)
@@ -585,12 +632,20 @@ class PumpPortalMonitor:
             # Get timestamp
             timestamp = data.get("timestamp", int(datetime.now().timestamp()))
             
+            # Extract token metadata from the trade data if available
+            token_symbol = data.get("symbol", "Unknown")
+            token_name = data.get("name", "Unknown")
+            
             logger.info(f"📊 Trade parsed: {mint}")
             logger.info(f"   Trader: {trader}")
             logger.info(f"   Type: {'BUY' if is_buy else 'SELL'}")
             logger.info(f"   SOL Amount: {sol_amount}")
             logger.info(f"   Token Amount: {token_amount}")
-            logger.info(f"   Price: {price:.12f} SOL")
+            logger.info(f"   vSolInBondingCurve: {v_sol_in_bonding_curve}")
+            logger.info(f"   vTokensInBondingCurve: {v_tokens_in_bonding_curve}")
+            logger.info(f"   Calculated Price: {price:.12f} SOL")
+            logger.info(f"   Token Symbol: {token_symbol}")
+            logger.info(f"   Token Name: {token_name}")
             
             return TradeInfo(
                 signature=data.get("signature", ""),
@@ -598,9 +653,12 @@ class PumpPortalMonitor:
                 trader=trader,
                 is_buy=is_buy,
                 amount=sol_amount,
+                token_amount=token_amount,
                 price=price,
                 market_cap=market_cap_usd,
-                timestamp=timestamp
+                timestamp=timestamp,
+                token_symbol=token_symbol,  # Add token metadata
+                token_name=token_name       # Add token metadata
             )
             
         except Exception as e:
@@ -612,9 +670,12 @@ class PumpPortalMonitor:
                 trader=data.get("traderPublicKey", ""),
                 is_buy=True,
                 amount=0.0,
+                token_amount=0.0,
                 price=0.0,
                 market_cap=0.0,
-                timestamp=int(datetime.now().timestamp())
+                timestamp=int(datetime.now().timestamp()),
+                token_symbol="Unknown",
+                token_name="Unknown"
             )
     
     async def handle_message(self, message: str):
@@ -764,16 +825,13 @@ class PumpPortalMonitor:
             if self.new_token_callback:
                 logger.info("📡 Calling new token callback...")
                 if asyncio.iscoroutinefunction(self.new_token_callback):
-                    # For async callbacks, we need to schedule them in the event loop
-                    try:
-                        loop = asyncio.get_event_loop()
-                        asyncio.run_coroutine_threadsafe(self.new_token_callback(token_info), loop)
-                    except:
-                        # If no loop available, call synchronously
-                        asyncio.run(self.new_token_callback(token_info))
+                    # For async callbacks, add to queue for processing in main event loop
+                    self.callback_queue.put((self.new_token_callback, (token_info,)))
+                    logger.info("📤 Added async token callback to queue")
                 else:
+                    # Synchronous callback - call directly
                     self.new_token_callback(token_info)
-                logger.info("✅ Token callback completed")
+                logger.info("✅ Token callback queued/completed")
             else:
                 logger.warning("⚠️ No new token callback set!")
                 
@@ -786,6 +844,9 @@ class PumpPortalMonitor:
         """Start monitoring for new tokens and trades"""
         self.monitoring = True
         logger.info("🎯 Starting PumpPortal monitoring...")
+        
+        # Start the callback processor
+        await self.start_callback_processor()
         
         # Check if WebSocket is already connected
         if self.is_websocket_connected():
@@ -1009,6 +1070,9 @@ class PumpPortalMonitor:
         """Stop monitoring but keep WebSocket connection alive"""
         logger.info("🛑 Stopping PumpPortal monitoring (keeping WebSocket alive)...")
         self.monitoring = False
+        
+        # Stop the callback processor
+        self.stop_callback_processor()
         
         # Synchronously unsubscribe from monitoring
         self.unsubscribe_from_monitoring_sync()

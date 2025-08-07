@@ -112,7 +112,7 @@ class PumpPortalTrader:
                         "amount": float(amount),  # Convert SOL to lamports
                         "denominatedInSol": "true",
                         "slippage": int(slippage),
-                        "priorityFee": 0.00005,  # Default priority fee
+                        "priorityFee": 0.000001,  # Default priority fee
                         "pool": pool
                     }
                 elif action == "sell":
@@ -124,7 +124,7 @@ class PumpPortalTrader:
                         "amount": float(amount),  # Token amount
                         "denominatedInSol": "false",
                         "slippage": int(slippage),
-                        "priorityFee": 0.00005,  # Default priority fee
+                        "priorityFee": 0.000001,  # Default priority fee
                         "pool": pool
                     }
                 else:
@@ -210,7 +210,7 @@ class PumpPortalTrader:
                     "amount": float(amount),  # Convert SOL to lamports
                     "denominatedInSol": "true",
                     "slippage": int(slippage),
-                    "priorityFee": 0.00005,  # Default priority fee for lightning
+                    "priorityFee": 0.000001,  # Default priority fee for lightning
                     "pool": pool,
                     "skipPreflight": skip_preflight,
                     "jitoOnly": jito_only
@@ -223,7 +223,7 @@ class PumpPortalTrader:
                     "amount": float(amount),  # Token amount
                     "denominatedInSol": "false",
                     "slippage": int(slippage),
-                    "priorityFee": 0.00005,  # Default priority fee for lightning
+                    "priorityFee": 0.000001,  # Default priority fee for lightning
                     "pool": pool,
                     "skipPreflight": skip_preflight,
                     "jitoOnly": jito_only

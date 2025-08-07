@@ -523,7 +523,7 @@ class SniperBot:
             # Execute the buy
             # success, signature, token_amount = await self.trader.buy_token(token.mint, settings.sol_per_snipe)
             # Execute the buy using the main buy_token method (which handles position tracking)
-            success = await self.buy_token(token.mint, settings.sol_per_snipe)
+            success = await self.buy_token(token.mint, settings.sol_per_snipe, token.symbol, token.name)
             if success:
                 logger.info(f"✅ Auto-buy successful for {token.symbol}")
                 
@@ -561,36 +561,49 @@ class SniperBot:
                     'message': error_msg
                 })
     
-    async def buy_token(self, mint: str, sol_amount: float) -> bool:
+    async def buy_token(self, mint: str, sol_amount: float, token_symbol: str = "Unknown", token_name: str = "Unknown") -> bool:
         """Buy a specific token"""
         try:
             if not self.keypair:
                 logger.error("❌ No wallet connected")
                 return False
             
-            logger.info(f"🛒 Attempting to buy {mint} for {sol_amount} SOL")
+            # Check if trader has wallet set
+            if not self.trader.keypair:
+                logger.error("❌ Trader wallet not set")
+                return False
+            
+            logger.info(f"🛒 Attempting to buy {mint} ({token_symbol}) for {sol_amount} SOL")
+            logger.info(f"🔑 Trader wallet: {str(self.trader.keypair.pubkey())}")
             
             # Execute the buy
-            success, signature, token_amount = await self.trader.buy_token(mint, sol_amount)
+            result = await self.trader.buy_token(mint, sol_amount)
+            logger.info(f"🔍 Trader buy_token result: {result} (type: {type(result)})")
+            
+            if result is None:
+                logger.error(f"❌ Trader buy_token returned None for {mint}")
+                return False
+            
+            success, signature, token_amount = result
             
             if success:
                 logger.info(f"✅ Buy successful! Signature: {signature}")
                 
-                # Create position tracking - metadata, entry price, and token amount will be updated from WebSocket data
+                # Create position tracking with token metadata
                 position = Position(
                     token_mint=mint,
-                    token_symbol="Unknown",  # Will be updated from WebSocket data
-                    token_name="Unknown",    # Will be updated from WebSocket data
-                    entry_price=0.0,         # Will be updated from our own trade data
+                    token_symbol=token_symbol,  # Use provided token metadata
+                    token_name=token_name,      # Use provided token metadata
+                    entry_price=0.0,            # Will be updated from our own trade data
                     entry_timestamp=int(time.time()),
                     sol_amount=sol_amount,
-                    token_amount=0.0         # Will be updated from our own trade data
+                    token_amount=0.0            # Will be updated from our own trade data
                 )
                 
                 self.positions[mint] = position
                 
-                logger.info(f"📊 Position created for {mint} | SOL Amount: {sol_amount}")
-                logger.info(f"🔄 Waiting for WebSocket data to update entry price, token amount, and metadata...")
+                logger.info(f"📊 Position created for {mint} ({token_symbol}) | SOL Amount: {sol_amount}")
+                logger.info(f"🔄 Waiting for WebSocket data to update entry price and token amount...")
                 
                 # Record the transaction (without token amount for now)
                 await self._record_transaction("buy", mint, sol_amount, signature, 0.0)
@@ -601,21 +614,26 @@ class SniperBot:
                 # Start price monitoring for this token (5 second interval)
                 await self._start_price_monitoring_for_token(mint)
                 
-                # Update UI
+                logger.info(f"🔄 Price monitoring started for {mint}")
+                
+                # Send initial position creation to UI immediately
                 if self.ui_callback:
                     # Convert signature to string for UI
                     signature_str = str(signature) if signature else ""
                     
-                    await self.ui_callback('position_update', {
+                    self.ui_callback('position_update', {
                         'action': 'buy',
                         'mint': mint,
                         'sol_amount': sol_amount,
                         'token_amount': 0.0,  # Will be updated from WebSocket
                         'signature': signature_str,
                         'entry_price': 0.0,  # Will be updated from WebSocket
-                        'token_symbol': "Unknown",  # Will be updated from WebSocket
-                        'token_name': "Unknown"     # Will be updated from WebSocket
+                        'token_symbol': token_symbol,  # Use provided token metadata
+                        'token_name': token_name       # Use provided token metadata
                     })
+                    logger.info(f"📱 Sent initial position creation to UI for {mint} ({token_symbol})")
+                else:
+                    logger.warning(f"⚠️ No UI callback set for position update")
                 
                 return True
             else:
@@ -674,7 +692,7 @@ class SniperBot:
                         
                         # Send price update to frontend
                         if self.ui_callback:
-                            await self.ui_callback('price_update', {
+                            self.ui_callback('price_update', {
                                 'mint': mint_address,
                                 'current_price': price,
                                 'current_pnl': position.current_pnl,
@@ -858,9 +876,22 @@ class SniperBot:
         except Exception as e:
             logger.error(f"❌ Error handling trade activity: {e}")
 
-    async def _handle_pumpportal_trade(self, trade_data: Dict[str, Any]):
+    async def _handle_pumpportal_trade(self, trade_info):
         """Handle trade events from PumpPortal WebSocket"""
         try:
+            # Convert TradeInfo to dictionary for compatibility with existing code
+            trade_data = {
+                'mint': trade_info.mint,
+                'txType': 'buy' if trade_info.is_buy else 'sell',
+                'traderPublicKey': trade_info.trader,
+                'solAmount': trade_info.amount,
+                'tokenAmount': trade_info.token_amount,  # Use the actual token amount from TradeInfo
+                'signature': trade_info.signature,
+                'timestamp': trade_info.timestamp,
+                'marketCapSol': trade_info.market_cap / 100.0,  # Convert USD to SOL (approximate)
+                'price': trade_info.price
+            }
+            
             # Store trade in history
             self.trade_history.append(trade_data)
             
@@ -868,9 +899,9 @@ class SniperBot:
             if len(self.trade_history) > 1000:
                 self.trade_history = self.trade_history[-1000:]
             
-            mint = trade_data.get('mint', '')
-            tx_type = trade_data.get('txType', '')
-            trader = trade_data.get('traderPublicKey', '')
+            mint = trade_data['mint']
+            tx_type = trade_data['txType']
+            trader = trade_data['traderPublicKey']
             
             logger.info(f"📊 PumpPortal trade: {tx_type} on {mint} by {trader}")
             logger.info(f"📋 Full trade data: {trade_data}")
@@ -885,8 +916,8 @@ class SniperBot:
                     
                     if tx_type == 'buy':
                         # Extract entry price from our buy trade
-                        sol_amount = trade_data.get('solAmount', 0.0)
-                        token_amount = trade_data.get('tokenAmount', 0.0)
+                        sol_amount = trade_data['solAmount']
+                        token_amount = trade_data['tokenAmount']  # Use the actual token amount
                         
                         logger.info(f"💰 Trade data - SOL Amount: {sol_amount}, Token Amount: {token_amount}")
                         
@@ -900,18 +931,20 @@ class SniperBot:
                             # Update transaction record with real token amount
                             await self._update_transaction_with_token_amount(mint, token_amount)
                         
-                        # Extract token metadata from trade data
-                        token_symbol = trade_data.get('symbol', 'Unknown')
-                        token_name = trade_data.get('name', 'Unknown')
+                        # Use token metadata from the trade data (already available)
+                        token_symbol = trade_info.token_symbol
+                        token_name = trade_info.token_name
                         
-                        if token_symbol != 'Unknown':
+                        if token_symbol and token_symbol != "Unknown":
                             position.token_symbol = token_symbol
                             position.token_name = token_name
-                            logger.info(f"📝 Updated token metadata: {token_symbol} ({token_name})")
+                            logger.info(f"📝 Updated token metadata from trade data: {token_symbol} ({token_name})")
+                        else:
+                            logger.warning(f"⚠️ No token metadata available in trade data for {mint}")
                         
                         # Update UI with the real data
                         if self.ui_callback:
-                            await self.ui_callback('position_update', {
+                            self.ui_callback('position_update', {
                                 'action': 'metadata_update',
                                 'mint': mint,
                                 'entry_price': position.entry_price,
@@ -919,6 +952,7 @@ class SniperBot:
                                 'token_symbol': position.token_symbol,
                                 'token_name': position.token_name
                             })
+                            logger.info(f"📱 Sent position update to UI for {mint}")
                 
                 return  # Don't process our own trades for buy counting
             
@@ -933,13 +967,13 @@ class SniperBot:
                 if tx_type == 'buy':
                     # Track this buy in our position
                     position.buy_count_since_entry += 1
-                    position.last_buy_timestamp = trade_data.get('timestamp', int(time.time()))
+                    position.last_buy_timestamp = trade_data['timestamp']
                     position.buyers_since_entry.add(trader)
                     
                     logger.info(f"📈 Buy detected for {mint}: {position.buy_count_since_entry} buys since our entry")
                     logger.info(f"   Unique buyers: {len(position.buyers_since_entry)}")
                     logger.info(f"   Buyer: {trader}")
-                    logger.info(f"   Trade SOL Amount: {trade_data.get('solAmount', 0.0)}")
+                    logger.info(f"   Trade SOL Amount: {trade_data['solAmount']}")
                     logger.info(f"   Trade Token Amount: {trade_data.get('tokenAmount', 0.0)}")
                     
                     # Use HeliusAPI's buy count method for 3-buy rule
@@ -947,16 +981,16 @@ class SniperBot:
                     
                     logger.info(f"📈 PumpPortal: {buy_count} total buys detected for {mint}")
                     
-                    # Check if we should sell based on 3-buy rule
+                    # Check if we should sell based on 3-buyer rule
                     settings = config_manager.config.bot_settings
-                    if settings.auto_sell and buy_count >= 3:
-                        logger.info(f"🎯 PumpPortal 3-buy sell condition met for {mint}, executing sell...")
-                        await self._execute_sell(mint, "PumpPortal 3-buy rule")
+                    if settings.auto_sell and position.buy_count_since_entry >= 3:
+                        logger.info(f"🎯 3-buyer sell condition met for {mint}, executing sell...")
+                        await self._execute_sell(mint, "3-buyer rule")
             
             # Update UI if callback exists
             if self.ui_callback:
-                await self.ui_callback('trade_update', trade_data)
-                
+                self.ui_callback('trade_update', trade_data)
+                        
         except Exception as e:
             logger.error(f"❌ Error handling PumpPortal trade: {e}")
             import traceback
@@ -972,7 +1006,7 @@ class SniperBot:
             
             # Update UI if callback exists
             if self.ui_callback:
-                await self.ui_callback('new_token', token_data)
+                self.ui_callback('new_token', token_data)
                 
         except Exception as e:
             logger.error(f"❌ Error handling PumpPortal new token: {e}")

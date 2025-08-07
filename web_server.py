@@ -342,9 +342,11 @@ def manual_buy():
         data = request.get_json()
         mint = data.get('mint')
         amount = data.get('amount', config_manager.config.bot_settings.sol_per_snipe)
+        symbol = data.get('symbol', 'Unknown')
+        name = data.get('name', 'Unknown')
         
         # Debug logging
-        logger.info(f"🔍 Manual buy request - mint: {mint}, amount: {amount}, type: {type(amount)}")
+        logger.info(f"🔍 Manual buy request - mint: {mint}, amount: {amount}, symbol: {symbol}, name: {name}")
         logger.info(f"🔍 Full request data: {data}")
         
         if not mint:
@@ -355,7 +357,7 @@ def manual_buy():
         
         # Execute buy in async context
         async def execute_buy():
-            return await bot.buy_token(mint, amount)
+            return await bot.buy_token(mint, amount, symbol, name)
         
         # Run in the bot's event loop if it exists
         if loop and not loop.is_closed():
