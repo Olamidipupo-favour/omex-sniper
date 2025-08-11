@@ -57,6 +57,8 @@ class BotSettings:
     include_pump_tokens: bool = True  # Include tokens from Pump.fun API
     # Transaction type settings
     transaction_type: str = "local"  # "local" or "lightning" - local builds and sends transactions, lightning uses PumpPortal's lightning API
+    # Priority fee setting
+    priority_fee: float = 0.0001  # Priority fee in SOL for transactions
 
 @dataclass
 class BotState:

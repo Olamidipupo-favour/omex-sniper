@@ -864,11 +864,11 @@ class TokenFilterService:
             if pump_tokens:
                 logger.info(f"📋 Pump.fun tokens JSON: {pump_tokens[:2]}")  # Show first 2 tokens
             
-            # Get tokens from Pump.fun Helius endpoint (if available)
-            pump_helius_tokens = await self.get_recent_tokens_from_pump_helius(days)
-            logger.info(f"📊 Found {len(pump_helius_tokens)} tokens from Pump.fun Helius")
-            if pump_helius_tokens:
-                logger.info(f"📋 Pump.fun Helius tokens JSON: {pump_helius_tokens[:2]}")  # Show first 2 tokens
+            # # Get tokens from Pump.fun Helius endpoint (if available)
+            # pump_helius_tokens = await self.get_recent_tokens_from_pump_helius(days)
+            # logger.info(f"📊 Found {len(pump_helius_tokens)} tokens from Pump.fun Helius")
+            # if pump_helius_tokens:
+            #     logger.info(f"📋 Pump.fun Helius tokens JSON: {pump_helius_tokens[:2]}")  # Show first 2 tokens
             
             # Get trending/running tokens from Pump.fun /api/runners endpoint
             trending_tokens = await self.get_trending_pump_tokens(days)
@@ -880,7 +880,7 @@ class TokenFilterService:
             if include_pump_only:
                 logger.info("🎯 Returning Pump.fun tokens only")
                 # Combine Pump.fun and Pump.fun Helius tokens
-                all_pump_tokens = pump_tokens + pump_helius_tokens + trending_tokens
+                all_pump_tokens = pump_tokens + trending_tokens
                 # Deduplicate
                 unique_pump_tokens = {}
                 for token in all_pump_tokens:

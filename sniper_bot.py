@@ -190,6 +190,7 @@ class SniperBot:
                 'custom_days': config_manager.config.bot_settings.custom_days,
                 'include_pump_tokens': config_manager.config.bot_settings.include_pump_tokens,
                 'transaction_type': config_manager.config.bot_settings.transaction_type,
+                'priority_fee': config_manager.config.bot_settings.priority_fee,
             }
         }
     
@@ -220,10 +221,12 @@ class SniperBot:
                 settings.custom_days
             )
             
+            logger.info(f"📅 Age threshold: {age_threshold_days} days")
+            
             # Get historical tokens using hybrid approach (no Pump.fun restriction)
             historical_tokens = await self.token_filter.get_hybrid_recent_tokens(
                 days=age_threshold_days,
-                include_pump_only=False  # Get all tokens, not just Pump.fun ones
+                include_pump_only=True  # Get all tokens, not just Pump.fun ones
             )
             
             logger.info(f"📊 Loaded {len(historical_tokens)} historical tokens")
@@ -264,6 +267,8 @@ class SniperBot:
             
         except Exception as e:
             logger.error(f"❌ Error loading historical tokens: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
     
     async def start_monitoring(self) -> bool:
         """Start monitoring for new tokens and trading opportunities"""
@@ -272,6 +277,17 @@ class SniperBot:
             
             # Update bot state
             config_manager.update_bot_state(is_running=True)
+            
+            # Get current bot settings
+            settings = config_manager.config.bot_settings
+            token_age_filter = settings.token_age_filter
+            
+            logger.info(f"🔍 Token age filter: {token_age_filter}")
+            # Load historical tokens if using historical filter
+            if token_age_filter != "new_only":
+                logger.info(f"📚 Loading historical tokens for {token_age_filter} filter...")
+                await self._load_historical_tokens()
+                logger.info("✅ Historical tokens loaded")
             
             # Start PumpPortal WebSocket monitoring
             await self._start_pumpportal_monitoring()
@@ -298,12 +314,23 @@ class SniperBot:
         try:
             logger.info("🔌 Starting PumpPortal WebSocket monitoring...")
             
-            # Prepare initial subscriptions
-            initial_subscriptions = {
-                'subscribe_new_tokens': True  # Always subscribe to new tokens
-            }
+            # Get current bot settings
+            settings = config_manager.config.bot_settings
+            token_age_filter = settings.token_age_filter
             
-            # Add account trades subscription if wallet is connected
+            # Prepare initial subscriptions
+            initial_subscriptions = {}
+            
+            # Only subscribe to new tokens if the filter allows it
+            if token_age_filter == "new_only":
+                initial_subscriptions['subscribe_new_tokens'] = True
+                logger.info("📡 Will subscribe to newly created tokens (newly_created_only filter)")
+            else:
+                # For historical filters (last_3_days, last_7_days, custom_days), don't subscribe to new tokens
+                logger.info(f"📡 Will NOT subscribe to new tokens (using {token_age_filter} filter)")
+                logger.info("📡 Will use historical data instead of WebSocket for new tokens")
+            
+            # Always add account trades subscription if wallet is connected
             if self.keypair:
                 wallet_address = str(self.keypair.pubkey())
                 initial_subscriptions['account_addresses'] = [wallet_address]
@@ -313,7 +340,8 @@ class SniperBot:
             await self.monitor.start_monitoring(initial_subscriptions)
             
             logger.info("✅ PumpPortal monitoring started using existing pump_fun_monitor.py")
-            logger.info("🔍 Listening for new tokens and trades with single WebSocket connection...")
+            logger.info(f"🔍 Token age filter: {token_age_filter}")
+            logger.info(f"🔍 Subscriptions: {initial_subscriptions}")
             
         except Exception as e:
             logger.error(f"❌ Error starting PumpPortal monitoring: {e}")
@@ -441,7 +469,7 @@ class SniperBot:
             
             # Apply age filter
             if settings.token_age_filter != "new_only":
-                # For non-new tokens, check if they meet the age criteria
+                # For non-newly created tokens, check if they meet the age criteria
                 age_threshold_days = self.token_filter._get_age_threshold_days(
                     settings.token_age_filter, 
                     settings.custom_days
@@ -452,6 +480,12 @@ class SniperBot:
                     age_threshold_days
                 ):
                     logger.info(f"⏭️ Token {token.symbol} filtered out by age: {enriched_token.get('age_days', 0):.1f} days old")
+                    return
+            else:
+                # For newly created tokens, ensure they are actually new (0-1 day old)
+                age_days = enriched_token.get('age_days', 0)
+                if age_days > 1:
+                    logger.info(f"⏭️ Token {token.symbol} filtered out - not newly created: {age_days:.1f} days old")
                     return
             
             # Check market cap filters
@@ -573,11 +607,16 @@ class SniperBot:
                 logger.error("❌ Trader wallet not set")
                 return False
             
+            # Get priority fee from settings
+            settings = config_manager.config.bot_settings
+            priority_fee = settings.priority_fee
+            
             logger.info(f"🛒 Attempting to buy {mint} ({token_symbol}) for {sol_amount} SOL")
             logger.info(f"🔑 Trader wallet: {str(self.trader.keypair.pubkey())}")
+            logger.info(f"💰 Priority fee: {priority_fee} SOL")
             
             # Execute the buy
-            result = await self.trader.buy_token(mint, sol_amount)
+            result = await self.trader.buy_token(mint, sol_amount, priority_fee=priority_fee)
             logger.info(f"🔍 Trader buy_token result: {result} (type: {type(result)})")
             
             if result is None:
@@ -763,12 +802,16 @@ class SniperBot:
             
             # Get transaction type from settings
             settings = config_manager.config.bot_settings
+            priority_fee = settings.priority_fee
+            
+            logger.info(f"💰 Priority fee: {priority_fee} SOL")
             
             # Use trader to execute sell with transaction type from settings
             success, signature, sol_received = await self.trader.sell_token(
                 mint, 
                 position.token_amount, 
-                transaction_type=settings.transaction_type
+                transaction_type=settings.transaction_type,
+                priority_fee=priority_fee
             )
             
             if success:
@@ -1288,12 +1331,16 @@ class SniperBot:
             
             # Get transaction type from settings
             settings = config_manager.config.bot_settings
+            priority_fee = settings.priority_fee
+            
+            logger.info(f"💰 Priority fee: {priority_fee} SOL")
             
             # Use trader to execute sell with transaction type from settings
             success, signature, sol_received = await self.trader.sell_token(
                 mint, 
                 position.token_amount, 
-                transaction_type=settings.transaction_type
+                transaction_type=settings.transaction_type,
+                priority_fee=priority_fee
             )
             
             if success:

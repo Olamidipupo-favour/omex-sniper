@@ -378,7 +378,8 @@ class SniperBotApp {
                 token_age_filter: document.getElementById('tokenAgeFilter').value,
                 custom_days: parseInt(document.getElementById('customDays').value),
                 include_pump_tokens: document.getElementById('includePumpTokens').checked,
-                transaction_type: document.getElementById('transactionType').value
+                transaction_type: document.getElementById('transactionType').value,
+                priority_fee: parseFloat(document.getElementById('priorityFee').value)
             };
             
             const response = await fetch('/api/settings/update', {
@@ -1153,6 +1154,7 @@ class SniperBotApp {
             document.getElementById('customDays').value = status.settings.custom_days || 7;
             document.getElementById('includePumpTokens').checked = status.settings.include_pump_tokens !== false; // Default to true
             document.getElementById('transactionType').value = status.settings.transaction_type || 'local';
+            document.getElementById('priorityFee').value = status.settings.priority_fee || 0.0001;
             
             // Show/hide custom days container based on filter selection
             const customDaysContainer = document.getElementById('customDaysContainer');
