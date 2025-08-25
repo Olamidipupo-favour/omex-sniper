@@ -39,8 +39,9 @@ class Position:
     sol_amount: float
     token_amount: float
     current_price: float = 0.0
-    current_pnl: float = 0.0
-    current_pnl_percent: float = 0.0
+    pnl_sol: float = 0.0
+    pnl_percent: float = 0.0
+    last_price_update: int = 0
     is_active: bool = True
     # New fields for buy activity monitoring
     buy_count_since_entry: int = 0  # Number of buys since we entered
@@ -64,6 +65,10 @@ class SniperBot:
         self.ui_callback: Optional[Callable] = None
         self.buy_activity_monitoring_task = None
         
+        # Add cancellation flag for historical token loading
+        self._historical_loading_cancelled = False
+        self._historical_loading_task = None
+        
         # Initialize Helius API
         self.helius_api = HeliusAPI()
         
@@ -78,6 +83,9 @@ class SniperBot:
         
         # Set up new token callback
         self.monitor.set_new_token_callback(self._handle_new_token)
+        
+        # Set up price update callback
+        self.monitor.set_price_update_callback(self._handle_price_update)
     
     def _check_wallet_on_startup(self):
         """Check if wallet is configured and connect automatically"""
@@ -223,52 +231,99 @@ class SniperBot:
             
             logger.info(f"📅 Age threshold: {age_threshold_days} days")
             
-            # Get historical tokens using hybrid approach (no Pump.fun restriction)
+            # Get historical tokens using hybrid approach with batch processing
+            # Create a batch callback to process tokens immediately as they're fetched
+            async def process_token_batch(token_batch: List[Dict[str, Any]]):
+                """Process a batch of tokens immediately for frontend updates"""
+                # Check if historical loading has been cancelled
+                if self._historical_loading_cancelled:
+                    logger.info("🛑 Historical token loading cancelled, skipping batch processing")
+                    return 0
+                
+                logger.info(f"📤 Processing batch of {len(token_batch)} tokens immediately")
+                
+                # Process each token in the batch concurrently
+                batch_tasks = []
+                for token_data in token_batch:
+                    # Check cancellation before processing each token
+                    if self._historical_loading_cancelled:
+                        logger.info("🛑 Historical token loading cancelled, stopping batch processing")
+                        return 0
+                    
+                    task = self._process_historical_token(token_data)
+                    batch_tasks.append(task)
+                
+                # Wait for all tokens in the batch to complete processing
+                batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+                
+                # Count successful processing
+                batch_processed = sum(1 for result in batch_results if result is True)
+                logger.info(f"✅ Batch processed: {batch_processed}/{len(token_batch)} tokens successfully")
+                
+                return batch_processed
+            
+            # Get historical tokens with batch processing
             historical_tokens = await self.token_filter.get_hybrid_recent_tokens(
                 days=age_threshold_days,
-                include_pump_only=True  # Get all tokens, not just Pump.fun ones
+                include_pump_only=True,  # Get all tokens, not just Pump.fun ones
+                batch_callback=process_token_batch,
+                batch_size=getattr(settings, 'historical_batch_size', 10),
+                cancellation_check=lambda: self._historical_loading_cancelled
             )
+            
+            # Check if loading was cancelled during the process
+            if self._historical_loading_cancelled:
+                logger.info("🛑 Historical token loading cancelled, stopping processing")
+                return
             
             logger.info(f"📊 Loaded {len(historical_tokens)} historical tokens")
             logger.info(f"📋 Historical tokens before processing: {historical_tokens}")
             
-            # Process each historical token
-            processed_count = 0
-            for token_data in historical_tokens:
-                try:
-                    # Convert to TokenInfo format
-                    token = TokenInfo(
-                        mint=token_data.get('mint', ''),
-                        symbol=token_data.get('symbol', ''),
-                        name=token_data.get('name', ''),
-                        description=token_data.get('description', ''),
-                        image=token_data.get('image_uri', ''),
-                        created_timestamp=token_data.get('created_timestamp', int(time.time())),
-                        usd_market_cap=token_data.get('usd_market_cap', 0),
-                        market_cap=token_data.get('market_cap', 0),
-                        price=token_data.get('price', 0),
-                        sol_in_pool=token_data.get('liquidity', 0),
-                        tokens_in_pool=0,
-                        initial_buy=0,
-                        liquidity=token_data.get('liquidity', 0),
-                        holders=token_data.get('holders', 0)
-                    )
-                    
-                    logger.info(f"🔄 Processing historical token: {token.symbol} ({token.mint})")
-                    
-                    # Process the token through normal flow
-                    await self._handle_new_token(token)
-                    processed_count += 1
-                    
-                except Exception as e:
-                    logger.error(f"❌ Error processing historical token {token_data.get('mint', 'unknown')}: {e}")
-            
-            logger.info(f"✅ Successfully processed {processed_count} historical tokens")
+            # Tokens are now processed in batches as they're fetched via the callback
+            # The historical_tokens list contains all tokens that were processed
+            logger.info(f"✅ Historical token loading completed. Total tokens processed: {len(historical_tokens)}")
             
         except Exception as e:
             logger.error(f"❌ Error loading historical tokens: {e}")
             import traceback
             logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    
+    async def _process_historical_token(self, token_data: Dict[str, Any]) -> bool:
+        """Process a single historical token (extracted from batch processing)"""
+        try:
+            # Check if historical loading has been cancelled
+            if self._historical_loading_cancelled:
+                logger.info("🛑 Historical token loading cancelled, skipping token processing")
+                return False
+            
+            # Convert to TokenInfo format
+            token = TokenInfo(
+                mint=token_data.get('mint', ''),
+                symbol=token_data.get('symbol', ''),
+                name=token_data.get('name', ''),
+                description=token_data.get('description', ''),
+                image=token_data.get('image_uri', ''),
+                created_timestamp=token_data.get('created_timestamp', int(time.time())),
+                usd_market_cap=token_data.get('usd_market_cap', 0),
+                market_cap=token_data.get('market_cap', 0),
+                price=token_data.get('price', 0),
+                sol_in_pool=token_data.get('liquidity', 0),
+                tokens_in_pool=0,
+                initial_buy=0,
+                liquidity=token_data.get('liquidity', 0),
+                holders=token_data.get('holders', 0)
+            )
+            
+            logger.info(f"🔄 Processing historical token: {token.symbol} ({token.mint})")
+            
+            # Process the token through normal flow (this includes holder updates)
+            await self._handle_new_token(token)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error processing historical token {token_data.get('mint', 'unknown')}: {e}")
+            return False
     
     async def start_monitoring(self) -> bool:
         """Start monitoring for new tokens and trading opportunities"""
@@ -286,8 +341,18 @@ class SniperBot:
             # Load historical tokens if using historical filter
             if token_age_filter != "new_only":
                 logger.info(f"📚 Loading historical tokens for {token_age_filter} filter...")
-                await self._load_historical_tokens()
-                logger.info("✅ Historical tokens loaded")
+                # Reset cancellation flag
+                self._historical_loading_cancelled = False
+                # Store the task for potential cancellation
+                self._historical_loading_task = asyncio.create_task(self._load_historical_tokens())
+                # Wait for it to complete (but it can be cancelled)
+                try:
+                    await self._historical_loading_task
+                    logger.info("✅ Historical tokens loaded")
+                except asyncio.CancelledError:
+                    logger.info("🛑 Historical token loading was cancelled")
+                except Exception as e:
+                    logger.error(f"❌ Error in historical token loading: {e}")
             
             # Start PumpPortal WebSocket monitoring
             await self._start_pumpportal_monitoring()
@@ -370,6 +435,16 @@ class SniperBot:
         try:
             logger.info("🛑 Stopping monitoring system (keeping WebSocket alive)...")
             config_manager.update_bot_state(is_running=False)
+            
+            # Cancel historical token loading
+            try:
+                if self._historical_loading_task and not self._historical_loading_task.done():
+                    logger.info("🛑 Cancelling historical token loading task...")
+                    self._historical_loading_task.cancel()
+                    self._historical_loading_cancelled = True
+                    logger.info("✅ Historical token loading task cancelled")
+            except Exception as e:
+                logger.warning(f"⚠️ Error cancelling historical token loading task: {e}")
             
             # Unsubscribe from specific tokens/accounts but don't close WebSocket
             try:
@@ -924,6 +999,53 @@ class SniperBot:
                         
         except Exception as e:
             logger.error(f"❌ Error handling trade activity: {e}")
+    
+    def _handle_price_update(self, mint: str, price_sol: float, price_usd: float):
+        """Handle price updates from websocket"""
+        try:
+            logger.info(f"💰 Price update received for {mint}: {price_sol:.12f} SOL (${price_usd:.8f})")
+            
+            # Check if we have a position for this token
+            if mint in self.positions and self.positions[mint].is_active:
+                position = self.positions[mint]
+                
+                # Update position with latest price
+                position.current_price = price_sol
+                position.last_price_update = int(time.time())
+                
+                # Calculate P&L if we have entry price
+                if position.entry_price > 0:
+                    pnl_sol = (price_sol - position.entry_price) * position.token_amount
+                    pnl_percent = ((price_sol - position.entry_price) / position.entry_price) * 100 if position.entry_price > 0 else 0
+                    
+                    position.pnl_sol = pnl_sol
+                    position.pnl_percent = pnl_percent
+                    
+                    logger.info(f"💰 P&L Update for {mint}:")
+                    logger.info(f"   Entry: {position.entry_price:.12f} SOL, Current: {price_sol:.12f} SOL")
+                    logger.info(f"   P&L: {pnl_sol:.6f} SOL ({pnl_percent:+.2f}%)")
+                    
+                    # Update UI with price and P&L update
+                    if self.ui_callback:
+                        self.ui_callback('position_update', {
+                            'action': 'price_update',
+                            'mint': mint,
+                            'current_price': price_sol,
+                            'current_price_usd': price_usd,
+                            'pnl_sol': pnl_sol,
+                            'pnl_percent': pnl_percent,
+                            'timestamp': int(time.time())
+                        })
+                        logger.info(f"📱 Sent price update to UI for {mint}")
+                else:
+                    logger.info(f"💰 Price updated for {mint} but no entry price available yet")
+            else:
+                logger.info(f"💰 Price update for {mint} but no active position found")
+                
+        except Exception as e:
+            logger.error(f"❌ Error handling price update: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
     async def _handle_pumpportal_trade(self, trade_info):
         """Handle trade events from PumpPortal WebSocket"""
@@ -1071,6 +1193,36 @@ class SniperBot:
             # Check if this is a token we have a position in (from subscribeTokenTrade)
             if mint in self.positions and self.positions[mint].is_active:
                 position = self.positions[mint]
+                
+                # Update position with latest price from websocket
+                if trade_info.price > 0:
+                    # Update current price for P&L calculations
+                    position.current_price = trade_info.price
+                    position.last_price_update = int(time.time())
+                    
+                    # Calculate P&L
+                    if position.entry_price > 0:
+                        pnl_sol = (trade_info.price - position.entry_price) * position.token_amount
+                        pnl_percent = ((trade_info.price - position.entry_price) / position.entry_price) * 100 if position.entry_price > 0 else 0
+                        
+                        position.pnl_sol = pnl_sol
+                        position.pnl_percent = pnl_percent
+                        
+                        logger.info(f"💰 Price update for {mint}: {trade_info.price:.12f} SOL")
+                        logger.info(f"   Entry: {position.entry_price:.12f} SOL, Current: {trade_info.price:.12f} SOL")
+                        logger.info(f"   P&L: {pnl_sol:.6f} SOL ({pnl_percent:+.2f}%)")
+                        
+                        # Update UI with price and P&L update
+                        if self.ui_callback:
+                            self.ui_callback('position_update', {
+                                'action': 'price_update',
+                                'mint': mint,
+                                'current_price': trade_info.price,
+                                'pnl_sol': pnl_sol,
+                                'pnl_percent': pnl_percent,
+                                'timestamp': int(time.time())
+                            })
+                            logger.info(f"📱 Sent price update to UI for {mint}")
                 
                 logger.info(f"📈 Token trade detected for our position: {mint}")
                 logger.info(f"📊 Current position - Symbol: {position.token_symbol}, Entry Price: ${position.entry_price:.6f}, Token Amount: {position.token_amount:,.0f}")

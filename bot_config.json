@@ -9,19 +9,20 @@
     "max_market_cap": 71000.0,
     "min_liquidity": 30.0,
     "min_holders": 2,
-    "auto_buy": true,
+    "auto_buy": false,
     "auto_sell": true,
-    "token_age_filter": "new_only",
+    "token_age_filter": "last_3_days",
     "custom_days": 7,
     "include_pump_tokens": true,
     "transaction_type": "local",
-    "priority_fee": 0.0001
+    "priority_fee": 0.0001,
+    "historical_batch_size": 10
   },
   "bot_state": {
     "is_running": true,
     "wallet_connected": true,
     "wallet_address": "952LPLt7zzU4RGUmBoPV7zQwsCire85P12Ht6Tp8Dno9",
-    "sol_balance": 0.002299558,
+    "sol_balance": 0.00229956,
     "total_pnl": 0.0,
     "active_positions": 0
   }

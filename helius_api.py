@@ -479,46 +479,109 @@ class HeliusAPI:
             return None 
 
     async def get_token_holders(self, mint_address: str) -> Optional[Dict[str, Any]]:
-        """Get token holder information from SolanaTracker API"""
+        """Get token holder information from SolanaTracker API with Moralis fallback"""
         try:
-            # SolanaTracker API endpoint for holder data
-            url = f"https://data.solanatracker.io/tokens/{mint_address}/holders?token={mint_address}"
+            # Add 0.5 second delay between requests to prevent rate limiting
+            await asyncio.sleep(0.5)
+            
+            # Primary: Try SolanaTracker API first
+            logger.info(f"🔍 Fetching holder data for {mint_address} from SolanaTracker API")
+            
+            url = f"https://data.solanatracker.io/tokens/{mint_address}/holders"
             headers = {
                 "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
             }
             
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
+                async with session.get(url, headers=headers, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
-                        logger.info(f"✅ Fetched holder data for {mint_address}")
+                        logger.info(f"✅ Fetched holder data for {mint_address} from SolanaTracker")
                         return data
                     else:
-                        logger.error(f"❌ Failed to fetch holder data: {response.status}")
+                        logger.warning(f"⚠️ SolanaTracker failed for {mint_address}: HTTP {response.status}, trying Moralis fallback")
+                        # Fall back to Moralis API
+                        return await self._get_holders_from_moralis_fallback(mint_address)
+                        
+        except Exception as e:
+            logger.error(f"❌ Error fetching holder data from SolanaTracker for {mint_address}: {e}")
+            logger.info(f"🔄 Trying Moralis fallback for {mint_address}")
+            # Fall back to Moralis API
+            return await self._get_holders_from_moralis_fallback(mint_address)
+    
+    async def _get_holders_from_moralis_fallback(self, mint_address: str) -> Optional[Dict[str, Any]]:
+        """Fallback method to get holder data from Moralis API"""
+        try:
+            logger.info(f"🔄 Fetching holder data for {mint_address} from Moralis API (fallback)")
+            
+            # Moralis API endpoint for holder data
+            url = f"https://solana-gateway.moralis.io/token/mainnet/holders/{mint_address}"
+            headers = {
+                "Accept": "application/json",
+                "X-API-Key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjkyZThkZmJhLTAyOGUtNGI5NC04ZjMzLWJkMTIwY2Y1MmM4MSIsIm9yZ0lkIjoiNDY3MjA2IiwidXNlcklkIjoiNDgwNjQ1IiwidHlwZUlkIjoiZmRlNTBkZmItNWIwNS00ZTIzLWIzODYtYjhiMzc5NTUwM2JlIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NTYxNDY2NjQsImV4cCI6NDkxMTkwNjY2NH0.iOqIBD7EERIIi38WSiqzcEfqwWxdAWjLDBL7tNZ-6MQ"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=15) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"✅ Fetched holder data for {mint_address} from Moralis (fallback)")
+                        
+                        # Check if data is None or empty
+                        if data is None:
+                            logger.warning(f"⚠️ Moralis fallback returned None for {mint_address}")
+                            return None
+                        
+                        return data
+                    else:
+                        logger.error(f"❌ Failed to fetch holder data from Moralis fallback: {response.status}")
                         return None
                         
         except Exception as e:
-            logger.error(f"❌ Error fetching holder data: {e}")
+            logger.error(f"❌ Error fetching holder data from Moralis fallback for {mint_address}: {e}")
             return None
     
     async def get_token_holder_count(self, mint_address: str) -> Optional[int]:
-        """Get the number of holders for a token"""
+        """Get the number of holders for a token from SolanaTracker API with Moralis fallback"""
         try:
+            # Add 0.5 second delay between requests to prevent rate limiting
+            await asyncio.sleep(0.5)
+            
             holder_data = await self.get_token_holders(mint_address)
+            # Check if we got data from SolanaTracker (primary source)
             if holder_data and 'total' in holder_data:
+                count = holder_data['total']
+                logger.info(f"📊 Token {mint_address} has {count} holders (from SolanaTracker total)")
+                return int(count)
+            elif holder_data and 'accounts' in holder_data and isinstance(holder_data['accounts'], list):
+                # If total not available, count the accounts array
+                count = len(holder_data['accounts'])
+                logger.info(f"📊 Token {mint_address} has {count} holders (from SolanaTracker accounts array)")
+                return int(count)
+            # Check if we got data from Moralis fallback
+            elif holder_data and 'totalHolders' in holder_data:
+                count = holder_data['totalHolders']
+                logger.info(f"📊 Token {mint_address} has {count} holders (from Moralis fallback totalHolders)")
+                return int(count)
+            elif holder_data is None:
+                logger.warning(f"⚠️ Both APIs returned None for {mint_address}, using fallback")
+                return 0
+            elif holder_data and 'result' in holder_data and isinstance(holder_data['result'], list):
+                # Fallback for other response formats
+                count = len(holder_data['result'])
+                logger.info(f"📊 Token {mint_address} has {count} holders (from result array)")
+                return int(count)
+            elif holder_data and 'total' in holder_data:
+                # Fallback for other response formats
                 count = holder_data['total']
                 logger.info(f"📊 Token {mint_address} has {count} holders")
                 return int(count)
-            elif holder_data and 'holders' in holder_data:
-                # If total not available, count the holders array
-                count = len(holder_data['holders'])
-                logger.info(f"📊 Token {mint_address} has {count} holders (from array)")
-                return count
             else:
                 logger.warning(f"⚠️ No holder count available for {mint_address}")
+                logger.debug(f"📋 Full response: {holder_data}")
                 return None
         except Exception as e:
-            logger.error(f"❌ Error getting holder count: {e}")
+            logger.error(f"❌ Error getting holder count from Moralis: {e}")
             return None
 
     def should_sell_based_on_buy_count(self, mint: str, trade_history: List[Dict[str, Any]], required_buys: int = 3) -> bool:

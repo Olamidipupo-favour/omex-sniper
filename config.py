@@ -59,6 +59,8 @@ class BotSettings:
     transaction_type: str = "local"  # "local" or "lightning" - local builds and sends transactions, lightning uses PumpPortal's lightning API
     # Priority fee setting
     priority_fee: float = 0.0001  # Priority fee in SOL for transactions
+    # Historical token processing settings
+    historical_batch_size: int = 10  # Number of historical tokens to process in each batch
 
 @dataclass
 class BotState:

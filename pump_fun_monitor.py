@@ -87,6 +87,9 @@ class PumpPortalMonitor:
         # Callback queue for handling async callbacks from WebSocket threads
         self.callback_queue = Queue()
         self.callback_processor_running = False
+        
+        # Price update callback
+        self.price_update_callback = None
     
     async def start_callback_processor(self):
         """Start the callback processor to handle async callbacks from WebSocket threads"""
@@ -156,19 +159,22 @@ class PumpPortalMonitor:
             return self.sol_price_usd
     
     async def get_token_holders_count(self, mint: str) -> int:
-        """Get the number of holders for a token using SolanaTracker API"""
+        """Get the number of holders for a token using SolanaTracker API with Moralis fallback"""
         try:
-            # SolanaTracker API endpoint for holder data
-            url = f"https://data.solanatracker.io/tokens/{mint}/holders?token={mint}"
+            # Add 0.5 second delay between requests to prevent rate limiting
+            await asyncio.sleep(0.5)
+            
+            # Primary: Try SolanaTracker API first
+            logger.info(f"🔍 Fetching holders for {mint} from SolanaTracker API")
+            
+            url = f"https://data.solanatracker.io/tokens/{mint}/holders"
             headers = {
                 "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
             }
             
-            logger.info(f"🔍 Fetching holders for {mint} from SolanaTracker API")
-            
             async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
                 async with session.get(url, headers=headers, timeout=10) as response:
-                    logger.info(f"📡 Response status: {response.status}")
+                    logger.info(f"📡 SolanaTracker response status: {response.status}")
                     
                     if response.status == 200:
                         data = await response.json()
@@ -176,17 +182,19 @@ class PumpPortalMonitor:
                         
                         # Extract holder count from SolanaTracker response
                         if 'total' in data:
-                            holders_count = data['total']
-                            logger.info(f"📊 Token {mint}: Found {holders_count} holders (from total)")
-                            return int(holders_count)
-                        elif 'holders' in data:
-                            # If total not available, count the holders array
-                            holders_count = len(data['holders'])
-                            logger.info(f"📊 Token {mint}: Found {holders_count} holders (from array)")
+                            holders_count = int(data['total'])
+                            logger.info(f"📊 Token {mint}: Found {holders_count} holders (from SolanaTracker total)")
+                            return holders_count
+                        elif 'accounts' in data and isinstance(data['accounts'], list):
+                            # If total not available, count the accounts array
+                            holders_count = len(data['accounts'])
+                            logger.info(f"📊 Token {mint}: Found {holders_count} holders (from SolanaTracker accounts array)")
                             return holders_count
                         else:
                             logger.warning(f"⚠️ No holder data found in SolanaTracker response for {mint}")
-                            return 0
+                            logger.debug(f"📋 Full response: {data}")
+                            # Fall back to Moralis API
+                            return await self._get_holders_from_moralis_fallback(mint)
                     else:
                         # Try to get error response body
                         try:
@@ -195,12 +203,79 @@ class PumpPortalMonitor:
                         except:
                             logger.error(f"❌ HTTP {response.status} error for {mint}: Could not read error body")
                         
-                        logger.warning(f"⚠️ Failed to get holders for {mint}: HTTP {response.status}")
-                        return 0
+                        logger.warning(f"⚠️ SolanaTracker failed for {mint}: HTTP {response.status}, trying Moralis fallback")
+                        # Fall back to Moralis API
+                        return await self._get_holders_from_moralis_fallback(mint)
+                        
         except Exception as e:
-            logger.error(f"❌ Exception getting holders for {mint}: {e}")
+            logger.error(f"❌ Exception getting holders from SolanaTracker for {mint}: {e}")
+            logger.info(f"🔄 Trying Moralis fallback for {mint}")
+            # Fall back to Moralis API
+            return await self._get_holders_from_moralis_fallback(mint)
+    
+    async def _get_holders_from_moralis_fallback(self, mint: str) -> int:
+        """Fallback method to get holder count from Moralis API"""
+        try:
+            # Add 0.5 second delay between requests to prevent rate limiting
+            await asyncio.sleep(0.5)
+            
+            logger.info(f"🔄 Fetching holders for {mint} from Moralis API (fallback)")
+            
+            # Moralis API endpoint for holder data
+            url = f"https://solana-gateway.moralis.io/token/mainnet/holders/{mint}"
+            headers = {
+                "Accept": "application/json",
+                "X-API-Key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjkyZThkZmJhLTAyOGUtNGI5NC04ZjMzLWJkMTIwY2Y1MmM4MSIsIm9yZ0lkIjoiNDY3MjA2IiwidXNlcklkIjoiNDgwNjQ1IiwidHlwZUlkIjoiZmRlNTBkZmItNWIwNS00ZTIzLWIzODYtYjhiMzc5NTUwM2JlIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NTYxNDY2NjQsImV4cCI6NDkxMTkwNjY2NH0.iOqIBD7EERIIi38WSiqzcEfqwWxdAWjLDBL7tNZ-6MQ"
+            }
+            
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                async with session.get(url, headers=headers, timeout=15) as response:
+                    logger.info(f"📡 Moralis fallback response status: {response.status}")
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"📋 Moralis fallback response for {mint}: {data}")
+                        
+                        # Check if data is None or empty
+                        if data is None:
+                            logger.warning(f"⚠️ Moralis fallback returned None for {mint}, using default holder count")
+                            return 0
+                        
+                        # Extract holder count from Moralis response
+                        if 'totalHolders' in data:
+                            holders_count = data['totalHolders']
+                            logger.info(f"📊 Token {mint}: Found {holders_count} holders (from Moralis fallback totalHolders)")
+                            return int(holders_count)
+                        elif 'result' in data and isinstance(data['result'], list):
+                            # Fallback for other response formats
+                            holders_count = len(data['result'])
+                            logger.info(f"📊 Token {mint}: Found {holders_count} holders (from Moralis fallback result array)")
+                            return int(holders_count)
+                        elif 'total' in data:
+                            # Fallback for other response formats
+                            holders_count = data['total']
+                            logger.info(f"📊 Token {mint}: Found {holders_count} holders (from Moralis fallback total)")
+                            return int(holders_count)
+                        else:
+                            logger.warning(f"⚠️ No holder data found in Moralis fallback response for {mint}")
+                            logger.debug(f"📋 Full response: {data}")
+                            return 0
+                    else:
+                        # Try to get error response body
+                        try:
+                            error_body = await response.text()
+                            logger.error(f"❌ HTTP {response.status} error for {mint} from Moralis fallback: {error_body}")
+                        except:
+                            logger.error(f"❌ HTTP {response.status} error for {mint} from Moralis fallback: Could not read error body")
+                        
+                        logger.warning(f"⚠️ Moralis fallback failed for {mint}: HTTP {response.status}")
+                        return 0
+                        
+        except Exception as e:
+            logger.error(f"❌ Exception getting holders from Moralis fallback for {mint}: {e}")
             import traceback
             logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            logger.info(f"🔄 Using default holder count (0) for {mint}")
             return 0
     
     async def update_token_holders_and_filter(self, token: TokenInfo, min_liquidity: float = 100.0, min_holders: int = 10) -> bool:
@@ -227,6 +302,8 @@ class PumpPortalMonitor:
                 
         except Exception as e:
             logger.error(f"❌ Error updating holders for {token.symbol}: {e}")
+            logger.info(f"🔄 Using fallback holder count (0) for {token.symbol}")
+            token.holders = 0
             return True  # Pass through if there's an error
     
     def set_new_token_callback(self, callback: Callable[[TokenInfo], None]):
@@ -236,6 +313,10 @@ class PumpPortalMonitor:
     def set_trade_callback(self, callback: Callable[[TradeInfo], None]):
         """Set callback function for trade notifications"""
         self.trade_callback = callback
+    
+    def set_price_update_callback(self, callback: Callable[[str, float, float], None]):
+        """Set callback function for price update notifications"""
+        self.price_update_callback = callback
     
     async def connect_websocket(self) -> bool:
         """Connect to PumpPortal WebSocket"""
@@ -579,14 +660,36 @@ class PumpPortalMonitor:
         return token_info
     
     def _process_trade_sync(self, data: Dict[str, Any]):
-        """Process trade data synchronously"""
+        """Process trade data synchronously with immediate price updates"""
         try:
             # Only process pool == 'pump'
             if data.get("pool") != "pump":
                 logger.info(f"⏭️ SKIPPING - Not a pump pool (pool: {data.get('pool')})")
                 return
             
-            # Parse trade data
+            # IMMEDIATELY calculate price from websocket data before any other processing
+            mint = data.get("mint", "")
+            if mint:
+                # Calculate price using bonding curve data (most accurate)
+                v_sol_in_bonding_curve = data.get("vSolInBondingCurve", 0.0)
+                v_tokens_in_bonding_curve = data.get("vTokensInBondingCurve", 0.0)
+                
+                # Calculate price immediately
+                if v_sol_in_bonding_curve > 0 and v_tokens_in_bonding_curve > 0:
+                    current_price_sol = v_sol_in_bonding_curve / v_tokens_in_bonding_curve
+                    current_price_usd = current_price_sol * self.sol_price_usd
+                    
+                    logger.info(f"💰 IMMEDIATE PRICE CALCULATION for {mint}:")
+                    logger.info(f"   vSolInBondingCurve: {v_sol_in_bonding_curve:.6f} SOL")
+                    logger.info(f"   vTokensInBondingCurve: {v_tokens_in_bonding_curve:,.0f}")
+                    logger.info(f"   Current Price: {current_price_sol:.12f} SOL (${current_price_usd:.8f})")
+                    
+                    # Emit price update to frontend immediately
+                    self._emit_price_update(mint, current_price_sol, current_price_usd, v_sol_in_bonding_curve, v_tokens_in_bonding_curve)
+                else:
+                    logger.warning(f"⚠️ No bonding curve data available for price calculation: {mint}")
+            
+            # Parse trade data (now with price already calculated and frontend updated)
             trade_info = self.parse_trade_data(data)
             
             # Call trade callback
@@ -613,6 +716,46 @@ class PumpPortalMonitor:
             import traceback
             logger.error(f"   Traceback: {traceback.format_exc()}")
     
+    def _emit_price_update(self, mint: str, price_sol: float, price_usd: float, v_sol: float, v_tokens: float):
+        """Emit price update to frontend immediately"""
+        try:
+            # Import here to avoid circular imports
+            from web_server import socketio
+            
+            price_update_data = {
+                'mint': mint,
+                'current_price_sol': price_sol,
+                'current_price_usd': price_usd,
+                'v_sol_in_bonding_curve': v_sol,
+                'v_tokens_in_bonding_curve': v_tokens,
+                'timestamp': int(time.time()),
+                'source': 'websocket_trade'
+            }
+            
+            logger.info(f"📡 Emitting price update to frontend: {mint} = {price_sol:.12f} SOL")
+            socketio.emit('price_update', price_update_data)
+            
+            # Also call the price update callback if set
+            if self.price_update_callback:
+                try:
+                    self.price_update_callback(mint, price_sol, price_usd)
+                    logger.info(f"✅ Price update callback executed for {mint}")
+                except Exception as callback_error:
+                    logger.error(f"❌ Error in price update callback: {callback_error}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error emitting price update: {e}")
+            # Fallback: try to use the UI callback if available
+            if hasattr(self, 'ui_callback') and self.ui_callback:
+                try:
+                    self.ui_callback('price_update', {
+                        'mint': mint,
+                        'current_price': price_usd,
+                        'price_sol': price_sol
+                    })
+                except Exception as fallback_error:
+                    logger.error(f"❌ Fallback UI callback also failed: {fallback_error}")
+    
     def parse_trade_data(self, data: Dict[str, Any]) -> TradeInfo:
         """Parse trade data from WebSocket"""
         try:
@@ -628,16 +771,19 @@ class PumpPortalMonitor:
             sol_amount = data.get("solAmount", 0.0)
             token_amount = data.get("tokenAmount", 0.0)
             
-            # Calculate price using bonding curve data (more accurate)
+            # Price is already calculated and frontend updated in _process_trade_sync
+            # Use the already calculated price from bonding curve data
             v_sol_in_bonding_curve = data.get("vSolInBondingCurve", 0.0)
             v_tokens_in_bonding_curve = data.get("vTokensInBondingCurve", 0.0)
             
-            # Use bonding curve data for price calculation if available
+            # Use bonding curve data for price calculation (most accurate)
             if v_sol_in_bonding_curve > 0 and v_tokens_in_bonding_curve > 0:
                 price = v_sol_in_bonding_curve / v_tokens_in_bonding_curve
+                logger.info(f"💰 Using bonding curve price: {price:.12f} SOL")
             else:
                 # Fallback to transaction-based price
                 price = sol_amount / token_amount if token_amount > 0 else 0.0
+                logger.info(f"💰 Using transaction-based price: {price:.12f} SOL")
             
             # Get market cap if available
             market_cap_sol = data.get("marketCapSol", 0.0)

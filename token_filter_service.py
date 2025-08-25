@@ -412,10 +412,13 @@ class TokenFilterService:
         
         return token
     
-    async def get_recent_pump_tokens(self, days: int = 7) -> List[Dict]:
-        """Get recent tokens from Pump.fun API using the real endpoint with timestamp-based fetching"""
+    async def get_recent_pump_tokens(self, days: int = 7, batch_callback=None, batch_size: int = 10, cancellation_check=None) -> List[Dict]:
+        """
+        Get recent tokens from Pump.fun API using the real endpoint with timestamp-based fetching
+        Now supports batch processing with callback for immediate frontend updates
+        """
         try:
-            logger.info(f"🔍 Getting Pump.fun tokens for last {days} days...")
+            logger.info(f"🔍 Getting Pump.fun tokens for last {days} days with batch size {batch_size}...")
             
             # Get current SOL price for market cap conversion
             sol_price_usd = await self.get_sol_price()
@@ -428,8 +431,9 @@ class TokenFilterService:
             offset = 0
             limit = 100
             max_iterations = 10  # Prevent infinite loops
+            current_batch = []
             
-            # Fetch tokens with pagination
+            # Fetch tokens with pagination and batch processing
             for iteration in range(max_iterations):
                 try:
                     # Use the real Pump.fun API endpoint with pagination
@@ -512,8 +516,27 @@ class TokenFilterService:
                                         logger.debug(f"⚠️ Error converting token {token.get('mint', 'unknown')}: {e}")
                                         continue
                                 
-                                # Add converted tokens to our collection
-                                all_tokens.extend(converted_tokens)
+                                # Process tokens in batches for immediate frontend updates
+                                for converted_token in converted_tokens:
+                                    # Check for cancellation before processing each token
+                                    if cancellation_check and cancellation_check():
+                                        logger.info("🛑 Historical token loading cancelled during batch processing")
+                                        return all_tokens
+                                    
+                                    current_batch.append(converted_token)
+                                    
+                                    # If batch is full, send it immediately
+                                    if len(current_batch) >= batch_size:
+                                        if batch_callback:
+                                            logger.info(f"📤 Sending batch of {len(current_batch)} tokens to frontend")
+                                            try:
+                                                await batch_callback(current_batch.copy())
+                                            except Exception as e:
+                                                logger.error(f"❌ Error in batch callback: {e}")
+                                        
+                                        # Add to total collection and clear batch
+                                        all_tokens.extend(current_batch)
+                                        current_batch = []
                                 
                                 # If we got fewer tokens than requested, we've reached the end
                                 if len(data) < limit:
@@ -533,6 +556,16 @@ class TokenFilterService:
                 except Exception as e:
                     logger.error(f"❌ Error fetching tokens at offset {offset}: {e}")
                     break
+            
+            # Send any remaining tokens in the final batch
+            if current_batch and batch_callback:
+                logger.info(f"📤 Sending final batch of {len(current_batch)} tokens to frontend")
+                try:
+                    await batch_callback(current_batch)
+                except Exception as e:
+                    logger.error(f"❌ Error in final batch callback: {e}")
+                
+                all_tokens.extend(current_batch)
             
             logger.info(f"📊 Total Pump.fun tokens found: {len(all_tokens)}")
             return all_tokens
@@ -701,10 +734,13 @@ class TokenFilterService:
             logger.error(f"❌ Error getting trending Pump.fun tokens: {e}")
             return []
     
-    async def get_trending_pump_tokens(self, days: int = 7) -> List[Dict]:
-        """Get trending/running tokens from Pump.fun /api/runners endpoint with timestamp filtering"""
+    async def get_trending_pump_tokens(self, days: int = 7, batch_callback=None, batch_size: int = 10, cancellation_check=None) -> List[Dict]:
+        """
+        Get trending/running tokens from Pump.fun /api/runners endpoint with timestamp filtering
+        Now supports batch processing with callback for immediate frontend updates
+        """
         try:
-            logger.info(f"🔍 Getting trending Pump.fun tokens for last {days} days...")
+            logger.info(f"🔍 Getting trending Pump.fun tokens for last {days} days with batch size {batch_size}...")
             
             # Calculate timestamp threshold
             current_time = int(time.time() * 1000)  # Convert to milliseconds
@@ -719,8 +755,10 @@ class TokenFilterService:
                         data = await response.json()
                         logger.info(f"✅ Pump.fun Runners API: Successfully fetched {len(data)} trending tokens")
                         
-                        # Convert Pump.fun runners data format to our standard format
+                        # Convert Pump.fun runners data format to our standard format with batch processing
                         converted_tokens = []
+                        current_batch = []
+                        
                         for runner in data:
                             try:
                                 coin = runner.get('coin', {})
@@ -782,11 +820,35 @@ class TokenFilterService:
                                 else:
                                     converted_token['age_days'] = 0
                                 
+                                # Check for cancellation before processing each token
+                                if cancellation_check and cancellation_check():
+                                    logger.info("🛑 Historical token loading cancelled during trending token processing")
+                                    return converted_tokens
+                                
                                 converted_tokens.append(converted_token)
+                                current_batch.append(converted_token)
+                                
+                                # If batch is full, send it immediately
+                                if len(current_batch) >= batch_size and batch_callback:
+                                    logger.info(f"📤 Sending batch of {len(current_batch)} trending tokens to frontend")
+                                    try:
+                                        await batch_callback(current_batch.copy())
+                                    except Exception as e:
+                                        logger.error(f"❌ Error in trending tokens batch callback: {e}")
+                                    
+                                    current_batch = []
                                 
                             except Exception as e:
                                 logger.debug(f"⚠️ Error converting runner token {runner.get('coin', {}).get('mint', 'unknown')}: {e}")
                                 continue
+                        
+                        # Send any remaining tokens in the final batch
+                        if current_batch and batch_callback:
+                            logger.info(f"📤 Sending final batch of {len(current_batch)} trending tokens to frontend")
+                            try:
+                                await batch_callback(current_batch)
+                            except Exception as e:
+                                logger.error(f"❌ Error in final trending tokens batch callback: {e}")
                         
                         logger.info(f"📊 Found {len(converted_tokens)} recent trending Pump.fun tokens from last {days} days")
                         return converted_tokens
@@ -853,16 +915,24 @@ class TokenFilterService:
             logger.error(f"❌ Error in simple token search: {e}")
             return []
     
-    async def get_hybrid_recent_tokens(self, days: int = 7, include_pump_only: bool = True) -> List[Dict]:
-        """Get recent tokens using hybrid approach (Pump.fun + Pump.fun Helius + Helius) - defaults to pump-only"""
+    async def get_hybrid_recent_tokens(self, days: int = 7, include_pump_only: bool = True, batch_callback=None, batch_size: int = 10, cancellation_check=None) -> List[Dict]:
+        """
+        Get recent tokens using hybrid approach (Pump.fun + Pump.fun Helius + Helius) - defaults to pump-only
+        Now supports batch processing with callback for immediate frontend updates
+        """
         try:
-            logger.info(f"🔍 Getting hybrid token list for last {days} days...")
+            logger.info(f"🔍 Getting hybrid token list for last {days} days with batch size {batch_size}...")
             
-            # Get tokens from Pump.fun (always prioritize this)
-            pump_tokens = await self.get_recent_pump_tokens(days)
+            # Get tokens from Pump.fun (always prioritize this) with batch processing
+            pump_tokens = await self.get_recent_pump_tokens(days, batch_callback, batch_size)
             logger.info(f"📊 Found {len(pump_tokens)} tokens from Pump.fun")
             if pump_tokens:
                 logger.info(f"📋 Pump.fun tokens JSON: {pump_tokens[:2]}")  # Show first 2 tokens
+            
+            # Check for cancellation after Pump.fun tokens
+            if cancellation_check and cancellation_check():
+                logger.info("🛑 Historical token loading cancelled during Pump.fun token fetch")
+                return []
             
             # # Get tokens from Pump.fun Helius endpoint (if available)
             # pump_helius_tokens = await self.get_recent_tokens_from_pump_helius(days)
@@ -870,11 +940,16 @@ class TokenFilterService:
             # if pump_helius_tokens:
             #     logger.info(f"📋 Pump.fun Helius tokens JSON: {pump_helius_tokens[:2]}")  # Show first 2 tokens
             
-            # Get trending/running tokens from Pump.fun /api/runners endpoint
-            trending_tokens = await self.get_trending_pump_tokens(days)
+            # Get trending/running tokens from Pump.fun /api/runners endpoint with batch processing
+            trending_tokens = await self.get_trending_pump_tokens(days, batch_callback, batch_size)
             logger.info(f"📊 Found {len(trending_tokens)} trending Pump.fun tokens")
             if trending_tokens:
                 logger.info(f"📋 Trending Pump.fun tokens JSON: {trending_tokens[:2]}") # Show first 2 tokens
+            
+            # Check for cancellation after trending tokens
+            if cancellation_check and cancellation_check():
+                logger.info("🛑 Historical token loading cancelled during trending token fetch")
+                return []
             
             # If pump_only is True, return only Pump.fun tokens (including Pump.fun Helius)
             if include_pump_only:
@@ -1045,47 +1120,109 @@ class TokenFilterService:
     
 
     async def get_token_holders(self, mint_address: str) -> Optional[Dict[str, Any]]:
-        """Get token holder information from SolanaTracker API"""
+        """Get token holder information from SolanaTracker API with Moralis fallback"""
         try:
-            # SolanaTracker API endpoint for holder data
-            url = f"https://data.solanatracker.io/tokens/{mint_address}/holders?token={mint_address}"
+            # Add 0.5 second delay between requests to prevent rate limiting
+            await asyncio.sleep(0.5)
+            
+            # Primary: Try SolanaTracker API first
+            logger.info(f"🔍 Fetching holder data for {mint_address} from SolanaTracker API")
+            
+            url = f"https://data.solanatracker.io/tokens/{mint_address}/holders"
             headers = {
                 "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
             }
             
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
+                async with session.get(url, headers=headers, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
-                        logger.info(f"✅ Fetched holder data for {mint_address}")
+                        logger.info(f"✅ Fetched holder data for {mint_address} from SolanaTracker")
                         return data
                     else:
-                        logger.error(f"❌ Failed to fetch holder data: {response.status}")
+                        logger.warning(f"⚠️ SolanaTracker failed for {mint_address}: HTTP {response.status}, trying Moralis fallback")
+                        # Fall back to Moralis API
+                        return await self._get_holders_from_moralis_fallback(mint_address)
+                        
+        except Exception as e:
+            logger.error(f"❌ Error fetching holder data from SolanaTracker for {mint_address}: {e}")
+            logger.info(f"🔄 Trying Moralis fallback for {mint_address}")
+            # Fall back to Moralis API
+            return await self._get_holders_from_moralis_fallback(mint_address)
+    
+    async def _get_holders_from_moralis_fallback(self, mint_address: str) -> Optional[Dict[str, Any]]:
+        """Fallback method to get holder data from Moralis API"""
+        try:
+            # Add 0.5 second delay between requests to prevent rate limiting
+            await asyncio.sleep(0.5)
+            
+            logger.info(f"🔄 Fetching holder data for {mint_address} from Moralis API (fallback)")
+            
+            # Moralis API endpoint for holder data
+            url = f"https://solana-gateway.moralis.io/token/mainnet/holders/{mint_address}"
+            headers = {
+                "Accept": "application/json",
+                "X-API-Key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjkyZThkZmJhLTAyOGUtNGI5NC04ZjMzLWJkMTIwY2Y1MmM4MSIsIm9yZ0lkIjoiNDY3MjA2IiwidXNlcklkIjoiNDgwNjQ1IiwidHlwZUlkIjoiZmRlNTBkZmItNWIwNS00ZTIzLWIzODYtYjhiMzc5NTUwM2JlIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NTYxNDY2NjQsImV4cCI6NDkxMTkwNjY2NH0.iOqIBD7EERIIi38WSiqzcEfqwWxdAWjLDBL7tNZ-6MQ"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=15) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"✅ Fetched holder data for {mint_address} from Moralis (fallback)")
+                        
+                        # Check if data is None or empty
+                        if data is None:
+                            logger.warning(f"⚠️ Moralis fallback returned None for {mint_address}")
+                            return None
+                        
+                        return data
+                    else:
+                        logger.error(f"❌ Failed to fetch holder data from Moralis fallback: {response.status}")
                         return None
                         
         except Exception as e:
-            logger.error(f"❌ Error fetching holder data: {e}")
+            logger.error(f"❌ Error fetching holder data from Moralis fallback for {mint_address}: {e}")
             return None
         
     async def get_token_holders_count(self, mint_address: str) -> Optional[int]:
-        """Get the number of holders for a token"""
+        """Get the number of holders for a token from SolanaTracker API with Moralis fallback"""
         try:
+            # Add 0.5 second delay between requests to prevent rate limiting
+            await asyncio.sleep(0.5)
+            
             holder_data = await self.get_token_holders(mint_address)
+            
+            # Check if we got data from SolanaTracker (primary source)
             if holder_data and 'total' in holder_data:
                 count = holder_data['total']
-                logger.info(f"📊 Token {mint_address} has {count} holders")
+                logger.info(f"📊 Token {mint_address} has {count} holders (from SolanaTracker total)")
                 return int(count)
-            elif holder_data and 'holders' in holder_data:
-                # If total not available, count the holders array
-                count = len(holder_data['holders'])
-                logger.info(f"📊 Token {mint_address} has {count} holders (from array)")
-                return count
+            elif holder_data and 'accounts' in holder_data and isinstance(holder_data['accounts'], list):
+                # If total not available, count the accounts array
+                count = len(holder_data['accounts'])
+                logger.info(f"📊 Token {mint_address} has {count} holders (from SolanaTracker accounts array)")
+                return int(count)
+            # Check if we got data from Moralis fallback
+            elif holder_data and 'totalHolders' in holder_data:
+                count = holder_data['totalHolders']
+                logger.info(f"📊 Token {mint_address} has {count} holders (from Moralis fallback totalHolders)")
+                return int(count)
+            elif holder_data and 'result' in holder_data and isinstance(holder_data['result'], list):
+                # Fallback for other Moralis response formats
+                count = len(holder_data['result'])
+                logger.info(f"📊 Token {mint_address} has {count} holders (from Moralis fallback result array)")
+                return int(count)
+            elif holder_data is None:
+                logger.warning(f"⚠️ Both APIs returned None for {mint_address}, using fallback")
+                return 0
             else:
                 logger.warning(f"⚠️ No holder count available for {mint_address}")
-                return None
+                logger.debug(f"📋 Full response: {holder_data}")
+                return 0
         except Exception as e:
             logger.error(f"❌ Error getting holder count: {e}")
-            return None
+            return 0
         
     # async def get_token_holders_count(self, mint: str) -> int:
     #     """Get the number of holders for a token using SolanaTracker API"""
