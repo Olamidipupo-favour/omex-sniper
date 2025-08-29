@@ -455,6 +455,8 @@ def get_sol_balance():
     try:
         # Prefer sync method to avoid event loop issues when server thread changes
         balance = bot.get_wallet_balance_sync()
+        if balance is None:
+            return jsonify({'success': False, 'sol_balance': None, 'error': 'no_wallet'})
         return jsonify({'success': True, 'sol_balance': balance})
     except Exception as e:
         logger.error(f"Error fetching SOL balance: {e}")

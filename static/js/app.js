@@ -116,9 +116,18 @@ class SniperBotApp {
             const res = await fetch('/api/wallet/sol_balance');
             if (!res.ok) return;
             const json = await res.json();
-            if (json?.success && json?.sol_balance !== undefined) {
+            if (json?.success && json?.sol_balance !== undefined && json.sol_balance !== null) {
                 this.actualSolBalance = Number(json.sol_balance) || 0;
                 this.updateSolBalanceDisplay(this.actualSolBalance);
+            } else if (json?.sol_balance === null || json?.error === 'no_wallet') {
+                // No wallet: disconnect UI state fully
+                this.walletConnected = false;
+                document.getElementById('walletForm').style.display = 'block';
+                document.getElementById('walletInfo').style.display = 'none';
+                document.getElementById('walletAddress').textContent = '-';
+                document.getElementById('walletBalance').textContent = '-';
+                document.getElementById('solBalance').textContent = '0.000';
+                this.updateBotControls();
             }
         } catch (_) {}
     }

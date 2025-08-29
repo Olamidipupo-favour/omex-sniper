@@ -71,6 +71,29 @@ class SniperBot:
         self.buy_activity_monitoring_task = None
         # Serialize auto-buys to respect max_positions and avoid race conditions
         self._buy_lock: asyncio.Lock = asyncio.Lock()
+        # New: track concurrent auto-buys and a queue when at capacity
+        self._autobuy_state_lock: asyncio.Lock = asyncio.Lock()
+        self._buys_in_progress: set[str] = set()
+        self._autobuy_queue: List[TokenInfo] = []
+
+    async def _start_autobuy_task(self, token: TokenInfo):
+        """Run a single auto-buy and ensure slot release + queue draining."""
+        settings = config_manager.config.bot_settings
+        try:
+            await self.buy_token(token.mint, settings.sol_per_snipe, token.symbol, token.name)
+        except Exception as e:
+            logger.error(f"❌ Auto-buy task failed for {getattr(token, 'symbol', token.mint)}: {e}")
+        finally:
+            async with self._autobuy_state_lock:
+                self._buys_in_progress.discard(token.mint)
+                # Drain queue if capacity available
+                active_positions = len([p for p in self.positions.values() if p.is_active])
+                concurrent_buys = len(self._buys_in_progress)
+                capacity = max(0, settings.max_positions - active_positions - concurrent_buys)
+                if capacity > 0 and self._autobuy_queue:
+                    next_token = self._autobuy_queue.pop(0)
+                    self._buys_in_progress.add(next_token.mint)
+                    asyncio.create_task(self._start_autobuy_task(next_token))
         
         # Add cancellation flag for historical token loading
         self._historical_loading_cancelled = False
@@ -702,19 +725,28 @@ class SniperBot:
                     })
                 return
             
-            # Serialize auto-buys so we obey max_positions accurately
-            async with self._buy_lock:
-                # Re-check conditions inside the lock
+            # Allow concurrent auto-buys up to max_positions
+            async with self._autobuy_state_lock:
+                # Already have a position? skip
                 if token.mint in self.positions and self.positions[token.mint].is_active:
                     logger.info(f"⏭️ Skipping auto-buy for {token.symbol} - already have position")
                     return
+                # Compute available slots
                 active_positions = len([p for p in self.positions.values() if p.is_active])
-                if active_positions >= settings.max_positions:
-                    logger.info(f"⏭️ Skipping auto-buy for {token.symbol} - max positions reached ({active_positions}/{settings.max_positions})")
+                concurrent_buys = len(self._buys_in_progress)
+                capacity = max(0, settings.max_positions - active_positions - concurrent_buys)
+                if capacity <= 0:
+                    # Queue only when at capacity
+                    logger.info(f"⏸️ Queuing auto-buy for {token.symbol} - at capacity ({active_positions}+{concurrent_buys}/{settings.max_positions})")
+                    self._autobuy_queue.append(token)
                     return
-                logger.info(f"🎯 Auto-buying {token.symbol} with {settings.sol_per_snipe} SOL...")
-                # Execute the buy using the main buy_token method (which handles position tracking)
-                success = await self.buy_token(token.mint, settings.sol_per_snipe, token.symbol, token.name)
+                # Reserve a slot for this buy
+                self._buys_in_progress.add(token.mint)
+
+            logger.info(f"🎯 Auto-buying {token.symbol} with {settings.sol_per_snipe} SOL...")
+            # Run via helper that guarantees slot release and queue drain, even on error
+            asyncio.create_task(self._start_autobuy_task(token))
+            success = True
             if success:
                 logger.info(f"✅ Auto-buy successful for {token.symbol}")
                 
@@ -1483,11 +1515,12 @@ class SniperBot:
         except Exception as e:
             logger.error(f"❌ Error monitoring buy activity: {e}")
 
-    def get_wallet_balance_sync(self) -> float:
+    def get_wallet_balance_sync(self) -> float | None:
         """Get wallet balance synchronously (for startup/status checks)"""
         try:
             if not self.keypair:
-                return 0.0
+                logger.info(f"💰 No wallet connected, returning None for balance (sync)")
+                return None
             
             # Use a simple sync client for one-off balance checks
             from solana.rpc.api import Client
@@ -1500,18 +1533,19 @@ class SniperBot:
                 config_manager.update_bot_state(sol_balance=balance_sol)
                 logger.info(f"💰 Balance fetched: {balance_sol:.4f} SOL")
                 return balance_sol
-            return 0.0
+            return None
         except Exception as e:
             logger.error(f"❌ Error getting balance: {e}")
             if "401" in str(e) or "Unauthorized" in str(e):
                 logger.error("💡 Check your HELIUS_API_KEY in the .env file")
             return config_manager.config.bot_state.sol_balance  # Return cached balance 
 
-    async def get_wallet_balance(self) -> float:
+    async def get_wallet_balance(self) -> float | None:
         """Async helper to fetch current SOL balance via RPC and update state."""
         try:
             if not self.keypair:
-                return 0.0
+                logger.info(f"💰 No wallet connected, returning None for balance")
+                return None
             # Use async path only if there's a running loop; otherwise fall back to sync
             try:
                 asyncio.get_running_loop()
