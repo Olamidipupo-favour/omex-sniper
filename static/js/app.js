@@ -121,13 +121,30 @@ class SniperBotApp {
                 this.updateSolBalanceDisplay(this.actualSolBalance);
             } else if (json?.sol_balance === null || json?.error === 'no_wallet') {
                 // No wallet: disconnect UI state fully
-                this.walletConnected = false;
-                document.getElementById('walletForm').style.display = 'block';
-                document.getElementById('walletInfo').style.display = 'none';
-                document.getElementById('walletAddress').textContent = '-';
-                document.getElementById('walletBalance').textContent = '-';
-                document.getElementById('solBalance').textContent = '0.000';
-                this.updateBotControls();
+                // But if a private key exists in backend, keep wallet UI hidden
+                fetch('/api/status').then(r => r.json()).then(s => {
+                    if (s?.success && s.data?.has_private_key) {
+                        document.getElementById('walletForm').style.display = 'none';
+                        document.getElementById('walletInfo').style.display = 'block';
+                        this.walletConnected = !!s.data.wallet_connected;
+                    } else {
+                        this.walletConnected = false;
+                        document.getElementById('walletForm').style.display = 'block';
+                        document.getElementById('walletInfo').style.display = 'none';
+                        document.getElementById('walletAddress').textContent = '-';
+                        document.getElementById('walletBalance').textContent = '-';
+                        document.getElementById('solBalance').textContent = '0.000';
+                        this.updateBotControls();
+                    }
+                }).catch(() => {
+                    this.walletConnected = false;
+                    document.getElementById('walletForm').style.display = 'block';
+                    document.getElementById('walletInfo').style.display = 'none';
+                    document.getElementById('walletAddress').textContent = '-';
+                    document.getElementById('walletBalance').textContent = '-';
+                    document.getElementById('solBalance').textContent = '0.000';
+                    this.updateBotControls();
+                });
             }
         } catch (_) {}
     }
@@ -1563,14 +1580,16 @@ class SniperBotApp {
         console.log('Updating UI from status:', status);
         
         // Update wallet info
-        if (status.wallet_connected && status.wallet_address) {
+        if ((status.wallet_connected && status.wallet_address) || status.has_private_key) {
             console.log('Restoring wallet connection...');
             document.getElementById('walletForm').style.display = 'none';
             document.getElementById('walletInfo').style.display = 'block';
             document.getElementById('walletAddress').textContent = status.wallet_address;
-            document.getElementById('walletBalance').textContent = `${status.sol_balance.toFixed(3)} SOL`;
-            document.getElementById('solBalance').textContent = status.sol_balance.toFixed(3);
-            this.walletConnected = true;
+            if (typeof status.sol_balance === 'number') {
+                document.getElementById('walletBalance').textContent = `${status.sol_balance.toFixed(3)} SOL`;
+                document.getElementById('solBalance').textContent = status.sol_balance.toFixed(3);
+            }
+            this.walletConnected = !!status.wallet_connected;
         } else {
             console.log('No wallet connected, showing wallet form...');
             document.getElementById('walletForm').style.display = 'block';

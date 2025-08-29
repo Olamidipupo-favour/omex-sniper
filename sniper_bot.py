@@ -69,6 +69,8 @@ class SniperBot:
         self.positions: Dict[str, Position] = {}
         self.ui_callback: Optional[Callable] = None
         self.buy_activity_monitoring_task = None
+        # Ensure trade history always exists before any later initialization may fail
+        self.trade_history: List[Dict[str, Any]] = []
         # Serialize auto-buys to respect max_positions and avoid race conditions
         self._buy_lock: asyncio.Lock = asyncio.Lock()
         # New: track concurrent auto-buys and a queue when at capacity
@@ -102,8 +104,7 @@ class SniperBot:
         # Initialize Helius API
         self.helius_api = HeliusAPI()
         
-        # Store trade history for analysis
-        self.trade_history: List[Dict[str, Any]] = []
+        # Store trade history for analysis (initialized in __init__)
         
         # Check for existing wallet on startup
         self._check_wallet_on_startup()
@@ -212,6 +213,7 @@ class SniperBot:
         """Get current bot status"""
         return {
             'is_running': config_manager.config.bot_state.is_running,
+            'has_private_key': config_manager.has_private_key(),
             'wallet_connected': config_manager.config.bot_state.wallet_connected,
             'wallet_address': config_manager.config.bot_state.wallet_address,
             'sol_balance': config_manager.config.bot_state.sol_balance,
@@ -916,9 +918,9 @@ class SniperBot:
                 await self.monitor.start_monitoring(initial_subs)
             else:
                 # Subscribe to our own account trades (for entry price and metadata)
-                if wallet_address:
-                    await self.monitor.add_account_trades_subscription([wallet_address])
-                    logger.info(f"📡 Added account trades subscription: {wallet_address}")
+                # if wallet_address:
+                #     await self.monitor.add_account_trades_subscription([wallet_address])
+                #     logger.info(f"📡 Added account trades subscription: {wallet_address}")
                 
                 # Subscribe to token trades (for monitoring other trades and buy-count condition)
                 if tokens_to_monitor:
@@ -1250,7 +1252,9 @@ class SniperBot:
                 'price': trade_info.price
             }
             
-            # Store trade in history
+            # Store trade in history (guard against missing attribute)
+            if not hasattr(self, 'trade_history') or self.trade_history is None:
+                self.trade_history = []
             self.trade_history.append(trade_data)
             
             # Keep only last 1000 trades to prevent memory issues
@@ -1519,8 +1523,20 @@ class SniperBot:
         """Get wallet balance synchronously (for startup/status checks)"""
         try:
             if not self.keypair:
-                logger.info(f"💰 No wallet connected, returning None for balance (sync)")
-                return None
+                # Attempt auto-connect if a private key is configured
+                if config_manager.has_private_key():
+                    try:
+                        private_key = config_manager.get_private_key()
+                        success, _ = self.connect_wallet_from_key(private_key)
+                        if not success:
+                            logger.info(f"💰 Auto-connect failed; returning cached balance")
+                            return config_manager.config.bot_state.sol_balance
+                    except Exception as e:
+                        logger.info(f"💰 No wallet keypair and auto-connect error: {e}; returning cached balance")
+                        return config_manager.config.bot_state.sol_balance
+                else:
+                    logger.info(f"💰 No wallet connected, returning None for balance (sync)")
+                    return None
             
             # Use a simple sync client for one-off balance checks
             from solana.rpc.api import Client
@@ -1533,7 +1549,8 @@ class SniperBot:
                 config_manager.update_bot_state(sol_balance=balance_sol)
                 logger.info(f"💰 Balance fetched: {balance_sol:.4f} SOL")
                 return balance_sol
-            return None
+            # If RPC didn't return a value, return cached balance
+            return config_manager.config.bot_state.sol_balance
         except Exception as e:
             logger.error(f"❌ Error getting balance: {e}")
             if "401" in str(e) or "Unauthorized" in str(e):
@@ -1544,8 +1561,20 @@ class SniperBot:
         """Async helper to fetch current SOL balance via RPC and update state."""
         try:
             if not self.keypair:
-                logger.info(f"💰 No wallet connected, returning None for balance")
-                return None
+                # Attempt auto-connect if a private key is configured
+                if config_manager.has_private_key():
+                    try:
+                        private_key = config_manager.get_private_key()
+                        success, _ = self.connect_wallet_from_key(private_key)
+                        if not success:
+                            logger.info(f"💰 Auto-connect failed; returning cached balance")
+                            return config_manager.config.bot_state.sol_balance
+                    except Exception as e:
+                        logger.info(f"💰 No wallet keypair and auto-connect error: {e}; returning cached balance")
+                        return config_manager.config.bot_state.sol_balance
+                else:
+                    logger.info(f"💰 No wallet connected, returning None for balance")
+                    return None
             # Use async path only if there's a running loop; otherwise fall back to sync
             try:
                 asyncio.get_running_loop()
