@@ -9,6 +9,8 @@ class SniperBotApp {
         this.positions = [];
         this.transactions = [];
         this.logs = [];
+        this.solUsd = 0; // Cached SOL->USD rate
+        this.actualSolBalance = 0; // Last fetched on-chain SOL balance
         
         // Add initial log message
         this.addLog('Pump.Fun Sniper Bot initialized', 'info');
@@ -48,6 +50,70 @@ class SniperBotApp {
         
         // Load initial data immediately
         this.loadInitialData();
+
+        // Kick off SOL→USD refresh and keep it updated periodically
+        this.refreshSolUsdPrice();
+        setInterval(() => this.refreshSolUsdPrice(), 60_000);
+
+        // Periodically refresh on-chain SOL balance (every ~3 seconds)
+        this.refreshSolBalance();
+        setInterval(() => this.refreshSolBalance(), 3000);
+    }
+
+    async refreshSolUsdPrice() {
+        try {
+            // Simple public endpoint; if it fails we'll keep previous value
+            const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
+            if (!res.ok) return;
+            const data = await res.json();
+            const usd = data?.solana?.usd;
+            if (typeof usd === 'number' && usd > 0) {
+                this.solUsd = usd;
+            }
+        } catch (_) {
+            // ignore network errors
+        }
+    }
+
+    // ----- Formatting helpers -----
+    formatSolPricePerToken(value) {
+        if (!value || !isFinite(value)) return 'N/A';
+        const base = Math.abs(value) < 1e-6 ? value.toExponential(6) : value.toFixed(6);
+        const usdText = this.solUsd > 0 ? ` ($${(value * this.solUsd).toFixed(6)})` : '';
+        return `${base} SOL${usdText}`;
+    }
+
+    formatSolAmount(value) {
+        if (!value || !isFinite(value)) return '0.0000 SOL';
+        const base = Math.abs(value) < 1e-4 ? value.toExponential(6) : value.toFixed(4);
+        const usdText = this.solUsd > 0 ? ` ($${(value * this.solUsd).toFixed(4)})` : '';
+        return `${base} SOL${usdText}`;
+    }
+
+    async refreshSolBalance() {
+        try {
+            const res = await fetch('/api/status');
+            if (!res.ok) return;
+            const json = await res.json();
+            if (json?.success && json?.data?.sol_balance !== undefined) {
+                this.actualSolBalance = Number(json.data.sol_balance) || 0;
+                this.updateSolBalanceDisplay(this.actualSolBalance);
+            }
+        } catch (_) {}
+    }
+
+    updateSolBalanceDisplay(solValue) {
+        const walletBalanceEl = document.getElementById('walletBalance');
+        const headerSolEl = document.getElementById('solBalance');
+        if (walletBalanceEl) walletBalanceEl.textContent = `${(solValue || 0).toFixed(3)} SOL`;
+        if (headerSolEl) headerSolEl.textContent = (solValue || 0).toFixed(3);
+    }
+
+    updateDisplayedSolBalanceFromPnL() {
+        let totalPnL = 0;
+        this.positions.forEach(pos => { totalPnL += pos.current_pnl || 0; });
+        const estimated = (this.actualSolBalance || 0) + totalPnL;
+        this.updateSolBalanceDisplay(estimated);
     }
     
     setupEventListeners() {
@@ -87,6 +153,20 @@ class SniperBotApp {
                 customDaysContainer.style.display = 'block';
             } else {
                 customDaysContainer.style.display = 'none';
+            }
+        });
+
+        // Sell strategy dropdown
+        document.getElementById('sellStrategy').addEventListener('change', (e) => {
+            const sellAfterBuysContainer = document.getElementById('sellAfterBuysContainer');
+            const sellAfterHoursContainer = document.getElementById('sellAfterHoursContainer');
+            
+            if (e.target.value === 'buy_count') {
+                sellAfterBuysContainer.style.display = 'block';
+                sellAfterHoursContainer.style.display = 'none';
+            } else if (e.target.value === 'time_based') {
+                sellAfterBuysContainer.style.display = 'none';
+                sellAfterHoursContainer.style.display = 'block';
             }
         });
         
@@ -147,7 +227,8 @@ class SniperBotApp {
             this.socket.on('price_update', (data) => {
                 console.log('📡 WebSocket: Price update received:', data);
                 console.log('📊 Price update mint:', data.mint);
-                console.log('📊 Price update current_price:', data.current_price);
+                console.log('📊 Price update current_price_sol:', data.current_price_sol);
+                console.log('📊 Price update current_price_usd:', data.current_price_usd);
                 this.handlePriceUpdate(data);
             });
             
@@ -375,6 +456,9 @@ class SniperBotApp {
                 min_holders: parseInt(document.getElementById('minHolders').value),
                 auto_buy: document.getElementById('autoBuy').checked,
                 auto_sell: document.getElementById('autoSell').checked,
+                sell_strategy: document.getElementById('sellStrategy').value,
+                sell_after_buys: parseInt(document.getElementById('sellAfterBuys').value),
+                sell_after_hours: parseFloat(document.getElementById('sellAfterHours').value),
                 token_age_filter: document.getElementById('tokenAgeFilter').value,
                 custom_days: parseInt(document.getElementById('customDays').value),
                 include_pump_tokens: document.getElementById('includePumpTokens').checked,
@@ -445,14 +529,24 @@ class SniperBotApp {
     }
     
     async sellPosition(mint) {
+        console.log('🔄 sellPosition called with mint:', mint);
+        
         if (!this.walletConnected) {
             this.showToast('Please connect your wallet first', 'warning');
+            return;
+        }
+        
+        if (!mint) {
+            this.showToast('Invalid mint address', 'error');
+            console.error('❌ sellPosition: No mint address provided');
             return;
         }
         
         this.showLoading(true);
         
         try {
+            console.log('📤 Sending sell request for mint:', mint);
+            
             const response = await fetch('/api/trade/sell', {
                 method: 'POST',
                 headers: {
@@ -463,17 +557,29 @@ class SniperBotApp {
                 })
             });
             
+            console.log('📥 Sell response status:', response.status);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
             const result = await response.json();
+            console.log('📊 Sell response data:', result);
             
             if (result.success) {
                 this.showToast('Sell order executed successfully!', 'success');
                 this.addLog(`Sell order executed for ${mint.slice(0, 8)}...`, 'success');
+                console.log('✅ Sell successful for mint:', mint);
             } else {
-                this.showToast(result.error || 'Sell order failed', 'error');
+                const errorMsg = result.error || 'Sell order failed';
+                this.showToast(errorMsg, 'error');
+                this.addLog(`Sell failed: ${errorMsg}`, 'error');
+                console.error('❌ Sell failed:', errorMsg);
             }
         } catch (error) {
-            console.error('Error selling position:', error);
-            this.showToast('Sell order failed', 'error');
+            console.error('❌ Error selling position:', error);
+            this.showToast(`Sell order failed: ${error.message}`, 'error');
+            this.addLog(`Sell error: ${error.message}`, 'error');
         } finally {
             this.showLoading(false);
         }
@@ -521,32 +627,67 @@ class SniperBotApp {
             console.log('🆕 Buy action received:', data);
             
             if (existingIndex === -1) {
-                // Create new position with initial data (entry_price and token_amount will be 0)
+                // Create new position with ALL available data from buy action
                 position = {
                     mint: data.mint,
                     token_mint: data.mint,
                     token_symbol: data.token_symbol || 'Unknown',
                     token_name: data.token_name || 'Unknown',
-                    entry_price: 0,  // Will be updated by metadata_update
-                    current_price: 0,
-                    token_amount: 0,  // Will be updated by metadata_update
+                    entry_price: data.entry_price || 0,  // Use from buy data if available
+                    // Prefer SOL fields; only fall back to USD if necessary
+                    current_price: data.current_price_sol || data.price || data.current_price || data.current_price_usd || 0,
+                    token_amount: data.token_amount || 0,  // Use from buy data if available
                     sol_amount: data.sol_amount || 0,
-                    current_pnl: 0,
-                    current_pnl_percent: 0,
+                    current_pnl: data.pnl || data.current_pnl || data.pnl_sol || 0,
+                    current_pnl_percent: data.pnl_percent || data.current_pnl_percent || data.pnl_percentage || 0,
                     is_active: true,
-                    entry_timestamp: Date.now() / 1000
+                    entry_timestamp: Date.now() / 1000,
+                    signature: data.signature || null
                 };
                 
                 this.positions.push(position);
                 console.log('✅ Created new position from buy action:', position);
             } else {
-                // Position already exists, update only non-critical data
+                // Position already exists, update ALL available data from buy action
                 position = this.positions[existingIndex];
-                position.token_symbol = data.token_symbol || position.token_symbol;
-                position.token_name = data.token_name || position.token_name;
-                position.sol_amount = data.sol_amount || position.sol_amount;
-                // DO NOT update entry_price or token_amount from buy action
-                console.log('✅ Updated existing position from buy action (no entry_price/token_amount update):', position);
+                
+                // Update ALL fields if provided in buy action data (flexible field mapping)
+                if (data.token_symbol) position.token_symbol = data.token_symbol;
+                if (data.token_name) position.token_name = data.token_name;
+                if (data.sol_amount) position.sol_amount = data.sol_amount;
+                if (data.entry_price) position.entry_price = data.entry_price;
+                if (data.token_amount) position.token_amount = data.token_amount;
+                if (data.signature) position.signature = data.signature;
+                
+                // Flexible price field mapping
+                // Prefer SOL fields; only fall back to USD if necessary
+                const newPrice = data.current_price_sol || data.price || data.current_price || data.current_price_usd;
+                if (newPrice && newPrice > 0) {
+                    position.current_price = newPrice;
+                }
+                
+                // Flexible P&L field mapping
+                const newPnlSol = data.pnl || data.current_pnl || data.pnl_sol;
+                if (newPnlSol !== undefined) {
+                    position.current_pnl = newPnlSol;
+                }
+                
+                const newPnlPercent = data.pnl_percent || data.current_pnl_percent || data.pnl_percentage;
+                if (newPnlPercent !== undefined) {
+                    position.current_pnl_percent = newPnlPercent;
+                }
+                
+                console.log('✅ Updated existing position from buy action (ALL available data updated):', {
+                    mint: position.mint,
+                    symbol: position.token_symbol,
+                    name: position.token_name,
+                    sol_amount: position.sol_amount,
+                    entry_price: position.entry_price,
+                    token_amount: position.token_amount,
+                    current_price: position.current_price,
+                    current_pnl: position.current_pnl,
+                    current_pnl_percent: position.current_pnl_percent
+                });
             }
             
             // Show success notification
@@ -557,32 +698,132 @@ class SniperBotApp {
             console.log('📝 Metadata update received:', data);
             
             if (existingIndex === -1) {
-                // Create new position if it doesn't exist
+                // Create new position with ALL available metadata
                 position = {
                     mint: data.mint,
                     token_mint: data.mint,
                     token_symbol: data.token_symbol || 'Unknown',
                     token_name: data.token_name || 'Unknown',
                     entry_price: data.entry_price || 0,
-                    current_price: 0,
+                    // Prefer SOL fields; only fall back to USD if necessary
+                    current_price: data.current_price_sol || data.price || data.current_price || data.current_price_usd || 0,
                     token_amount: data.token_amount || 0,
-                    sol_amount: 0,  // Will be updated by buy action if it comes later
-                    current_pnl: 0,
-                    current_pnl_percent: 0,
+                    sol_amount: data.sol_amount || 0,
+                    current_pnl: data.pnl || data.current_pnl || data.pnl_sol || 0,
+                    current_pnl_percent: data.pnl_percent || data.current_pnl_percent || data.pnl_percentage || 0,
                     is_active: true,
-                    entry_timestamp: Date.now() / 1000
+                    entry_timestamp: Date.now() / 1000,
+                    signature: data.signature || null
                 };
                 
                 this.positions.push(position);
                 console.log('✅ Created new position from metadata_update:', position);
             } else {
-                // Update existing position with real data
+                // Update existing position with ALL available real data
                 position = this.positions[existingIndex];
-                position.token_symbol = data.token_symbol || position.token_symbol;
-                position.token_name = data.token_name || position.token_name;
-                position.entry_price = data.entry_price || position.entry_price;  // Only metadata_update can update this
-                position.token_amount = data.token_amount || position.token_amount;  // Only metadata_update can update this
-                console.log('✅ Updated existing position from metadata_update (with real data):', position);
+                
+                // Update ALL fields if provided in metadata_update (flexible field mapping)
+                if (data.token_symbol) position.token_symbol = data.token_symbol;
+                if (data.token_name) position.token_name = data.token_name;
+                if (data.entry_price) position.entry_price = data.entry_price;
+                if (data.token_amount) position.token_amount = data.token_amount;
+                if (data.sol_amount) position.sol_amount = data.sol_amount;
+                if (data.signature) position.signature = data.signature;
+                
+                // Flexible price field mapping
+                // Prefer SOL fields; only fall back to USD if necessary
+                const newPrice = data.current_price_sol || data.price || data.current_price || data.current_price_usd;
+                if (newPrice && newPrice > 0) {
+                    position.current_price = newPrice;
+                }
+                
+                // Flexible P&L field mapping
+                const newPnlSol = data.pnl || data.current_pnl || data.pnl_sol;
+                if (newPnlSol !== undefined) {
+                    position.current_pnl = newPnlSol;
+                }
+                
+                const newPnlPercent = data.pnl_percent || data.current_pnl_percent || data.pnl_percentage;
+                if (newPnlPercent !== undefined) {
+                    position.current_pnl_percent = newPnlPercent;
+                }
+                
+                console.log('✅ Updated existing position from metadata_update (ALL available data updated):', {
+                    mint: position.mint,
+                    symbol: position.token_symbol,
+                    name: position.token_name,
+                    entry_price: position.entry_price,
+                    token_amount: position.token_amount,
+                    current_price: position.current_price,
+                    sol_amount: position.sol_amount
+                });
+            }
+            
+        } else if (data.action === 'price_update') {
+            // Position price updated
+            console.log('💰 Price update received:', data);
+            console.log('💰 Price update data:', {
+                mint: data.mint,
+                current_price: data.current_price,
+                pnl_sol: data.pnl_sol,
+                pnl_percent: data.pnl_percent,
+                backup_entry_price: data.entry_price,
+                backup_token_amount: data.token_amount
+            });
+            
+            if (existingIndex !== -1) {
+                position = this.positions[existingIndex];
+                
+                // Update position fields with flexible field mapping
+                // Prefer SOL fields; only fall back to USD if necessary
+                const newPrice = data.current_price_sol || data.price || data.current_price || data.current_price_usd;
+                if (newPrice && newPrice > 0) {
+                    position.current_price = newPrice;
+                }
+                
+                const newPnlSol = data.pnl || data.current_pnl || data.pnl_sol;
+                if (newPnlSol !== undefined) {
+                    position.current_pnl = newPnlSol;
+                }
+                
+                const newPnlPercent = data.pnl_percent || data.current_pnl_percent || data.pnl_percentage;
+                if (newPnlPercent !== undefined) {
+                    position.current_pnl_percent = newPnlPercent;
+                }
+                
+                // BACKUP: Use metadata from price_update if our position is missing data
+                if (!position.entry_price && data.entry_price > 0) {
+                    position.entry_price = data.entry_price;
+                    console.log('🔄 Restored entry_price from backup data:', position.entry_price);
+                }
+                if (!position.token_amount && data.token_amount > 0) {
+                    position.token_amount = data.token_amount;
+                    console.log('🔄 Restored token_amount from backup data:', position.token_amount);
+                }
+                if ((!position.token_symbol || position.token_symbol === 'Unknown') && data.token_symbol) {
+                    position.token_symbol = data.token_symbol;
+                    console.log('🔄 Restored token_symbol from backup data:', position.token_symbol);
+                }
+                if ((!position.token_name || position.token_name === 'Unknown') && data.token_name) {
+                    position.token_name = data.token_name;
+                    console.log('🔄 Restored token_name from backup data:', position.token_name);
+                }
+                if (!position.sol_amount && data.sol_amount > 0) {
+                    position.sol_amount = data.sol_amount;
+                    console.log('🔄 Restored sol_amount from backup data:', position.sol_amount);
+                }
+                
+                console.log('✅ Updated position with price data (with backup restoration):', {
+                    mint: position.mint,
+                    symbol: position.token_symbol,
+                    current_price: position.current_price,
+                    current_pnl: position.current_pnl,
+                    current_pnl_percent: position.current_pnl_percent,
+                    entry_price: position.entry_price,
+                    token_amount: position.token_amount
+                });
+            } else {
+                console.warn('⚠️ Price update for unknown position:', data.mint);
             }
             
         } else if (data.action === 'sell') {
@@ -595,6 +836,10 @@ class SniperBotApp {
             // Show notification
             const pnlText = data.pnl_percent ? ` (${data.pnl_percent.toFixed(2)}%)` : '';
             this.showNotification(`Position sold${pnlText}`, 'success');
+            
+        } else {
+            // Unknown action type
+            console.warn('⚠️ Unknown position update action:', data.action, data);
         }
         
         // Always update the positions table and header stats
@@ -675,29 +920,84 @@ class SniperBotApp {
     }
     
     handlePriceUpdate(data) {
-        console.log('💰 Price update received:', data);
+        console.log('💰 Direct price update received:', data);
+        console.log('💰 Direct price data fields:', {
+            mint: data.mint,
+            current_price_sol: data.current_price_sol,
+            current_price_usd: data.current_price_usd,
+            source: data.source
+        });
         
         // Find and update the position in our local array
         const position = this.positions.find(p => p.mint === data.mint || p.token_mint === data.mint);
         if (position) {
-            position.current_price = data.current_price;
-            position.current_pnl = data.current_pnl;
-            position.current_pnl_percent = data.current_pnl_percent;
+            // Update price from direct price_update event (flexible field mapping)
+            // Prefer SOL fields; only fall back to USD if necessary
+            const newPrice = data.current_price_sol || data.price || data.current_price || data.current_price_usd;
+            if (newPrice && newPrice > 0) {
+                position.current_price = newPrice;
+                console.log('✅ Updated price from direct update:', {
+                    mint: position.mint,
+                    new_price: position.current_price,
+                    price_source: data.current_price_sol ? 'current_price_sol' : data.price ? 'price' : data.current_price ? 'current_price' : 'current_price_usd'
+                });
+            }
             
-            console.log('✅ Updated position with price data:', position);
+            // Also check for P&L data that might be included
+            const newPnlSol = data.pnl || data.current_pnl || data.pnl_sol;
+            if (newPnlSol !== undefined) {
+                position.current_pnl = newPnlSol;
+                console.log('✅ Updated P&L SOL from direct update:', position.current_pnl);
+            }
             
-            // Update the positions table to reflect the new price
+            const newPnlPercent = data.pnl_percent || data.current_pnl_percent || data.pnl_percentage;
+            if (newPnlPercent !== undefined) {
+                position.current_pnl_percent = newPnlPercent;
+                console.log('✅ Updated P&L % from direct update:', position.current_pnl_percent);
+            }
+            
+            // Calculate P&L if we have entry price and token amount, otherwise set to 0
+            if (position.entry_price > 0 && position.token_amount > 0) {
+                const pnl_sol = (position.current_price - position.entry_price) * position.token_amount;
+                const pnl_percent = ((position.current_price - position.entry_price) / position.entry_price) * 100;
+                
+                position.current_pnl = pnl_sol;
+                position.current_pnl_percent = pnl_percent;
+                
+                console.log('✅ Updated position with direct price data + calculated P&L:', {
+                    mint: position.mint,
+                    symbol: position.token_symbol,
+                    current_price: position.current_price,
+                    calculated_pnl: position.current_pnl,
+                    calculated_pnl_percent: position.current_pnl_percent
+                });
+                
+                // Add log entry for significant price changes
+                if (Math.abs(position.current_pnl_percent) > 5) {
+                    this.addLog(`💰 ${position.token_symbol}: ${position.current_pnl_percent >= 0 ? '+' : ''}${position.current_pnl_percent.toFixed(2)}% ($${position.current_price.toFixed(8)})`, 'info');
+                }
+            } else {
+                // No P&L calculation possible, but still update price
+                position.current_pnl = 0;
+                position.current_pnl_percent = 0;
+                
+                console.log('✅ Updated position with direct price data (no P&L calculation - missing entry_price or token_amount):', {
+                    mint: position.mint,
+                    symbol: position.token_symbol,
+                    current_price: position.current_price,
+                    entry_price: position.entry_price,
+                    token_amount: position.token_amount
+                });
+            }
+            
+            // ALWAYS update the positions table regardless of entry_price/token_amount status
             this.updatePositionsTable();
             
-            // Update total P&L
+            // ALWAYS update total P&L
             this.updateTotalPnL();
             
-            // Add log entry for significant price changes
-            if (Math.abs(data.current_pnl_percent) > 5) {
-                this.addLog(`💰 ${data.token_symbol}: ${data.current_pnl_percent >= 0 ? '+' : ''}${data.current_pnl_percent.toFixed(2)}% ($${data.current_price.toFixed(8)})`, 'info');
-            }
         } else {
-            console.warning('⚠️ Price update for unknown position:', data.mint);
+            console.warn('⚠️ Direct price update for unknown position:', data.mint);
         }
     }
     
@@ -712,9 +1012,52 @@ class SniperBotApp {
         
         this.addLog(`${tradeType}: ${trader} - ${solAmount} SOL for ${tokenAmount} tokens`, 'info');
         
-        // Update positions table if this affects our positions
-        if (this.positions.some(pos => pos.mint === data.mint)) {
+        // Check if this trade affects our positions and update price data
+        const position = this.positions.find(pos => pos.mint === data.mint || pos.token_mint === data.mint);
+        if (position) {
+            console.log('📊 Trade update for our position:', data.mint);
+            
+            // Update position with price data from trade update (price might come as 'price' or 'current_price')
+            // Prefer SOL fields; only fall back to USD if necessary
+            const tradePrice = data.current_price_sol || data.price || data.current_price || data.current_price_usd;
+            if (tradePrice && tradePrice > 0) {
+                position.current_price = tradePrice;
+                console.log('✅ Updated position price from trade update:', {
+                    mint: position.mint,
+                    symbol: position.token_symbol,
+                    new_price: position.current_price,
+                    price_source: data.current_price_sol ? 'current_price_sol' : data.price ? 'price' : data.current_price ? 'current_price' : 'current_price_usd'
+                });
+                
+                // Recalculate P&L if we have entry data
+                if (position.entry_price > 0 && position.token_amount > 0) {
+                    const pnl_sol = (position.current_price - position.entry_price) * position.token_amount;
+                    const pnl_percent = ((position.current_price - position.entry_price) / position.entry_price) * 100;
+                    
+                    position.current_pnl = pnl_sol;
+                    position.current_pnl_percent = pnl_percent;
+                    
+                    console.log('✅ Recalculated P&L from trade update:', {
+                        mint: position.mint,
+                        pnl_sol: position.current_pnl,
+                        pnl_percent: position.current_pnl_percent
+                    });
+                }
+            }
+            
+            // Update other potential fields from trade data
+            if (data.token_symbol && position.token_symbol === 'Unknown') {
+                position.token_symbol = data.token_symbol;
+                console.log('✅ Updated token symbol from trade update:', data.token_symbol);
+            }
+            if (data.token_name && position.token_name === 'Unknown') {
+                position.token_name = data.token_name;
+                console.log('✅ Updated token name from trade update:', data.token_name);
+            }
+            
+            // Always update positions table when our position is affected
             this.updatePositionsTable();
+            this.updateTotalPnL();
         }
     }
     
@@ -859,12 +1202,10 @@ class SniperBotApp {
                         <span class="token-mint">${this.truncateAddress(position.mint || position.token_mint || '')}</span>
                     </div>
                 </td>
-                <td>${position.entry_price ? `$${position.entry_price.toFixed(6)}` : 'N/A'}</td>
-                <td>${position.current_price ? `$${position.current_price.toFixed(6)}` : 'N/A'}</td>
+                <td>${this.formatSolPricePerToken(position.entry_price)}</td>
+                <td>${this.formatSolPricePerToken(position.current_price)}</td>
                 <td>${(position.token_amount || 0).toLocaleString()}</td>
-                <td class="${pnl >= 0 ? 'positive' : 'negative'}">
-                    ${pnlPercent.toFixed(2)}% (${pnl.toFixed(4)} SOL)
-                </td>
+                <td class="${pnl >= 0 ? 'positive' : 'negative'}">${pnlPercent.toFixed(2)}% (${this.formatSolAmount(pnl)})</td>
                 <td><span class="status active">Active</span></td>
                 <td>
                     <button class="btn-sell" onclick="app.sellPosition('${position.mint || position.token_mint}')">Sell</button>
@@ -878,15 +1219,19 @@ class SniperBotApp {
         // Update summary
         const summaryElement = document.querySelector('.positions-summary');
         if (summaryElement) {
+            const totalInvestedText = this.formatSolAmount(totalInvested);
+            const totalPnlText = this.formatSolAmount(totalPnl);
             summaryElement.innerHTML = `
-                Total Invested: ${totalInvested.toFixed(4)} SOL | 
-                P&L: <span class="${totalPnl >= 0 ? 'positive' : 'negative'}">${totalPnl.toFixed(4)} SOL</span>
+                Total Invested: ${totalInvestedText} | 
+                P&L: <span class="${totalPnl >= 0 ? 'positive' : 'negative'}">${totalPnlText}</span>
             `;
             console.log('✅ Updated positions summary');
         }
         
         console.log('✅ Positions table updated successfully');
         console.log('📊 Final table content length:', tbody.innerHTML.length);
+        // Keep SOL balance display in sync with latest P&L
+        this.updateDisplayedSolBalanceFromPnL();
     }
     
     updateTransactionsTable() {
@@ -937,7 +1282,8 @@ class SniperBotApp {
         
         const pnlElement = document.getElementById('totalPnl');
         if (pnlElement) {
-            pnlElement.textContent = `${totalPnL >= 0 ? '+' : ''}${totalPnL.toFixed(4)} SOL`;
+            const pnlText = this.formatSolAmount(totalPnL);
+            pnlElement.textContent = `${totalPnL >= 0 ? '+' : ''}${pnlText}`;
             pnlElement.className = totalPnL >= 0 ? 'stat-value pnl profit' : 'stat-value pnl loss';
         }
         
@@ -946,6 +1292,9 @@ class SniperBotApp {
         if (activePositionsElement) {
             activePositionsElement.textContent = this.positions.length;
         }
+
+        // Also update estimated SOL balance based on unrealized P&L
+        this.updateDisplayedSolBalanceFromPnL();
     }
     
     addLog(message, type = 'info') {
@@ -1150,6 +1499,9 @@ class SniperBotApp {
             document.getElementById('minHolders').value = status.settings.min_holders || 10;
             document.getElementById('autoBuy').checked = status.settings.auto_buy || false;
             document.getElementById('autoSell').checked = status.settings.auto_sell !== false; // Default to true
+            document.getElementById('sellStrategy').value = status.settings.sell_strategy || 'buy_count';
+            document.getElementById('sellAfterBuys').value = status.settings.sell_after_buys || 5;
+            document.getElementById('sellAfterHours').value = status.settings.sell_after_hours || 5.0;
             document.getElementById('tokenAgeFilter').value = status.settings.token_age_filter || 'new_only';
             document.getElementById('customDays').value = status.settings.custom_days || 7;
             document.getElementById('includePumpTokens').checked = status.settings.include_pump_tokens !== false; // Default to true
@@ -1162,6 +1514,17 @@ class SniperBotApp {
                 customDaysContainer.style.display = 'block';
             } else {
                 customDaysContainer.style.display = 'none';
+            }
+
+            // Show/hide sell strategy containers based on strategy selection
+            const sellAfterBuysContainer = document.getElementById('sellAfterBuysContainer');
+            const sellAfterHoursContainer = document.getElementById('sellAfterHoursContainer');
+            if (status.settings.sell_strategy === 'time_based') {
+                sellAfterBuysContainer.style.display = 'none';
+                sellAfterHoursContainer.style.display = 'block';
+            } else {
+                sellAfterBuysContainer.style.display = 'block';
+                sellAfterHoursContainer.style.display = 'none';
             }
         }
         
@@ -1413,30 +1776,7 @@ class SniperBotApp {
         console.log('✅ Transactions table updated successfully');
     }
     
-    async sellPosition(mint) {
-        try {
-            const response = await fetch('/api/trade/sell', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ mint })
-            });
-            
-            const data = await response.json();
-            
-            if (data.success) {
-                this.showNotification('Position sold successfully', 'success');
-                // Don't fetch from API - the WebSocket will update the local array
-                console.log('✅ Sell successful, waiting for WebSocket update');
-            } else {
-                this.showNotification(`Sell failed: ${data.error}`, 'error');
-            }
-        } catch (error) {
-            console.error('Error selling position:', error);
-            this.showNotification('Error selling position', 'error');
-        }
-    }
+    // REMOVED DUPLICATE sellPosition function - using the one at line 447
 
     // Test method to verify tab switching works correctly
     testTabSwitching() {

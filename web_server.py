@@ -250,10 +250,14 @@ def update_settings():
             'min_holders': int,
             'auto_buy': bool,
             'auto_sell': bool,
+            'sell_strategy': str,
+            'sell_after_buys': int,
+            'sell_after_hours': float,
             'token_age_filter': str,
             'custom_days': int,
             'include_pump_tokens': bool,
-            'transaction_type': str
+            'transaction_type': str,
+            'priority_fee': float
         }
         
         settings = {}
@@ -486,7 +490,7 @@ def get_transactions():
 
 # WebSocket Events
 @socketio.on('connect')
-def handle_connect():
+def handle_connect(auth=None):
     """Handle client connection"""
     logger.info("Client connected")
     

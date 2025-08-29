@@ -80,7 +80,7 @@ class PumpPortalMonitor:
         self.subscribed_to_new_tokens = False  # Track if we're subscribed to new tokens
         self.connection_attempts = 0
         self.max_connection_attempts = 5
-        self.sol_price_usd = 100.0  # Default fallback price
+        self.sol_price_usd = 188.76  # Default fallback price (current SOL price)
         self.last_sol_price_update = 0
         self.sol_price_cache_duration = 300  # 5 minutes
         
@@ -90,24 +90,32 @@ class PumpPortalMonitor:
         
         # Price update callback
         self.price_update_callback = None
+        
+        # Buy count tracking per token
+        self.buy_counts = {}  # {token_address: count}
     
     async def start_callback_processor(self):
         """Start the callback processor to handle async callbacks from WebSocket threads"""
         if self.callback_processor_running:
-            return
+            logger.info("🔄 Callback processor already marked as running, checking if task is alive...")
+            # Force restart if the task died
+            self.callback_processor_running = False
         
         self.callback_processor_running = True
+        logger.info("🔄 Starting callback processor...")
         
         async def process_callbacks():
-            logger.info("🔄 Callback processor loop started")
+            logger.info("🔄 Callback processor loop started - ACTIVE")
+            callback_count = 0
             while self.callback_processor_running:
                 try:
                     # Check for callbacks in the queue
                     if not self.callback_queue.empty():
                         callback_info = self.callback_queue.get_nowait()
                         callback_func, args = callback_info
+                        callback_count += 1
                         
-                        logger.info(f"📤 Processing callback: {callback_func.__name__} with args: {args}")
+                        logger.info(f"📤 Processing callback #{callback_count}: {callback_func.__name__} with args: {args}")
                         
                         if asyncio.iscoroutinefunction(callback_func):
                             logger.info(f"🔄 Executing async callback: {callback_func.__name__}")
@@ -118,16 +126,21 @@ class PumpPortalMonitor:
                             callback_func(*args)
                             logger.info(f"✅ Sync callback completed: {callback_func.__name__}")
                     else:
+                        # Log periodic heartbeat to confirm processor is alive
+                        if callback_count > 0 and callback_count % 100 == 0:
+                            logger.info(f"💓 Callback processor heartbeat - processed {callback_count} callbacks")
                         await asyncio.sleep(0.1)  # Small delay to prevent busy waiting
                 except Exception as e:
                     logger.error(f"❌ Error processing callback: {e}")
                     import traceback
                     logger.error(f"❌ Callback error traceback: {traceback.format_exc()}")
                     await asyncio.sleep(0.1)
+            
+            logger.info("🛑 Callback processor loop ended")
         
-        # Start the callback processor
-        asyncio.create_task(process_callbacks())
-        logger.info("✅ Callback processor started")
+        # Start the callback processor task and store reference
+        self._callback_processor_task = asyncio.create_task(process_callbacks())
+        logger.info("✅ Callback processor task created and started")
     
     def stop_callback_processor(self):
         """Stop the callback processor"""
@@ -703,6 +716,49 @@ class PumpPortalMonitor:
                     logger.info("📤 Adding async callback to queue...")
                     self.callback_queue.put((self.trade_callback, (trade_info,)))
                     logger.info(f"📤 Added async callback to queue. Queue size: {self.callback_queue.qsize()}")
+                    
+                    # ADDITIONAL: Try to immediately schedule the callback in the stored main event loop
+                    try:
+                        if hasattr(self, '_main_event_loop') and self._main_event_loop and not self._main_event_loop.is_closed():
+                            logger.info("🔄 Scheduling async callback in stored main event loop...")
+                            self._main_event_loop.call_soon_threadsafe(
+                                lambda: asyncio.create_task(self.trade_callback(trade_info))
+                            )
+                            logger.info("✅ Async callback scheduled successfully in main loop")
+                        else:
+                            logger.warning("⚠️ No valid main event loop found, relying on queue processor")
+                            logger.info(f"📊 Queue processor running: {self.callback_processor_running}")
+                            logger.info(f"📊 Current queue size: {self.callback_queue.qsize()}")
+                    except Exception as schedule_error:
+                        logger.warning(f"⚠️ Could not schedule callback directly: {schedule_error}, relying on queue processor")
+                        logger.info(f"📊 Queue processor running: {self.callback_processor_running}")
+                        logger.info(f"📊 Current queue size: {self.callback_queue.qsize()}")
+                    
+                    # BACKUP: If queue processor is not running, execute async callback synchronously as last resort
+                    if not self.callback_processor_running:
+                        logger.warning("🚨 Queue processor not running! Executing async callback synchronously as BACKUP")
+                        try:
+                            # Create a new event loop just for this callback
+                            import threading
+                            
+                            def run_async_callback():
+                                try:
+                                    loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(loop)
+                                    loop.run_until_complete(self.trade_callback(trade_info))
+                                    loop.close()
+                                    logger.info("✅ Backup async callback completed successfully")
+                                except Exception as e:
+                                    logger.error(f"❌ Backup async callback failed: {e}")
+                            
+                            # Run in a separate thread to avoid blocking
+                            backup_thread = threading.Thread(target=run_async_callback, daemon=True)
+                            backup_thread.start()
+                            logger.info("🔄 Started backup thread for async callback")
+                            
+                        except Exception as backup_error:
+                            logger.error(f"❌ Backup mechanism failed: {backup_error}")
+                            logger.warning("⚠️ Trade callback completely failed - this trade will be lost!")
                 else:
                     # Synchronous callback - call directly
                     logger.info("🔄 Calling sync callback directly...")
@@ -748,10 +804,12 @@ class PumpPortalMonitor:
             # Fallback: try to use the UI callback if available
             if hasattr(self, 'ui_callback') and self.ui_callback:
                 try:
+                    # Emit SOL-first fields to match frontend expectations
                     self.ui_callback('price_update', {
                         'mint': mint,
-                        'current_price': price_usd,
-                        'price_sol': price_sol
+                        'current_price': price_sol,            # keep legacy key but in SOL
+                        'current_price_sol': price_sol,
+                        'current_price_usd': price_usd
                     })
                 except Exception as fallback_error:
                     logger.error(f"❌ Fallback UI callback also failed: {fallback_error}")
@@ -766,6 +824,13 @@ class PumpPortalMonitor:
             # Determine if this is a buy or sell
             tx_type = data.get("txType", "").lower()
             is_buy = tx_type in ["buy", "swap"]
+            
+            # Track buy counts for tokens
+            if is_buy and mint:
+                if mint not in self.buy_counts:
+                    self.buy_counts[mint] = 0
+                self.buy_counts[mint] += 1
+                logger.info(f"📈 BUY COUNT UPDATE: {{'token': '{mint}', 'count': {self.buy_counts[mint]}}}")
             
             # Extract amounts
             sol_amount = data.get("solAmount", 0.0)
@@ -1004,6 +1069,14 @@ class PumpPortalMonitor:
         """Start monitoring for new tokens and trades"""
         self.monitoring = True
         logger.info("🎯 Starting PumpPortal monitoring...")
+        
+        # Store the main event loop reference for cross-thread callback scheduling
+        try:
+            self._main_event_loop = asyncio.get_running_loop()
+            logger.info(f"✅ Stored main event loop reference: {self._main_event_loop}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not store main event loop reference: {e}")
+            self._main_event_loop = None
         
         # Start the callback processor
         await self.start_callback_processor()

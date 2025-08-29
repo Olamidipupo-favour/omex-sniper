@@ -58,7 +58,7 @@ class TokenFilterService:
         self.pump_helius_available = False
         
         # SOL price variables (like in pump_fun_monitor.py)
-        self.sol_price_usd = 100.0  # Default fallback price
+        self.sol_price_usd = 188.76  # Default fallback price (current SOL price)
         self.last_sol_price_update = 0
         self.sol_price_cache_duration = 300  # 5 minutes
     

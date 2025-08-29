@@ -60,7 +60,7 @@ class MockPriceUpdateHandler:
     
     def __init__(self):
         self.price_updates = []
-        self.sol_price_usd = 100.0  # Mock SOL price
+        self.sol_price_usd = 188.76  # Mock SOL price (current rate)
     
     def handle_price_update(self, mint: str, price_sol: float, price_usd: float):
         """Handle price updates"""

@@ -51,6 +51,10 @@ class BotSettings:
     min_holders: int = 10  # Minimum number of holders
     auto_buy: bool = False
     auto_sell: bool = True
+    # Sell strategy settings
+    sell_strategy: str = "buy_count"  # "buy_count" or "time_based"
+    sell_after_buys: int = 5  # Number of buys to wait before selling (when strategy is buy_count)
+    sell_after_hours: float = 5.0  # Number of hours to wait before selling (when strategy is time_based)
     # Token age filter settings
     token_age_filter: str = "new_only"  # new_only, last_1_day, last_3_days, last_7_days, last_14_days, last_30_days, custom_days
     custom_days: int = 7  # Custom number of days for token age filter

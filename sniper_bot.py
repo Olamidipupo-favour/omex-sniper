@@ -39,6 +39,9 @@ class Position:
     sol_amount: float
     token_amount: float
     current_price: float = 0.0
+    # Current P&L snapshot (used by UI and total P&L calculations)
+    current_pnl: float = 0.0
+    current_pnl_percent: float = 0.0
     pnl_sol: float = 0.0
     pnl_percent: float = 0.0
     last_price_update: int = 0
@@ -47,6 +50,8 @@ class Position:
     buy_count_since_entry: int = 0  # Number of buys since we entered
     last_buy_timestamp: int = 0  # Timestamp of last buy detected
     buyers_since_entry: set = None  # Set of buyer addresses since our entry
+    # Time-based sell tracking
+    entry_time: int = 0  # Entry time in seconds since epoch
     
     def __post_init__(self):
         if self.buyers_since_entry is None:
@@ -64,6 +69,8 @@ class SniperBot:
         self.positions: Dict[str, Position] = {}
         self.ui_callback: Optional[Callable] = None
         self.buy_activity_monitoring_task = None
+        # Serialize auto-buys to respect max_positions and avoid race conditions
+        self._buy_lock: asyncio.Lock = asyncio.Lock()
         
         # Add cancellation flag for historical token loading
         self._historical_loading_cancelled = False
@@ -136,6 +143,10 @@ class SniperBot:
             logger.info(f"✅ Wallet connected: {wallet_address}")
             logger.info(f"💰 Current balance: {balance:.4f} SOL")
             
+            # Note: Account monitoring will be set up when monitoring starts
+            # (Cannot await here as this is not an async function)
+            logger.info(f"📡 Account monitoring will be set up when bot starts: {wallet_address}")
+            
             return True, f"Wallet connected successfully"
             
         except Exception as e:
@@ -182,7 +193,8 @@ class SniperBot:
             'wallet_address': config_manager.config.bot_state.wallet_address,
             'sol_balance': config_manager.config.bot_state.sol_balance,
             'total_pnl': config_manager.config.bot_state.total_pnl,
-            'active_positions': len([p for p in self.positions if p.is_active]),
+            # Iterate over position objects, not dict keys
+            'active_positions': sum(1 for p in self.positions.values() if p.is_active),
             'settings': {
                 'sol_per_snipe': config_manager.config.bot_settings.sol_per_snipe,
                 'max_positions': config_manager.config.bot_settings.max_positions,
@@ -194,6 +206,9 @@ class SniperBot:
                 'min_holders': config_manager.config.bot_settings.min_holders,
                 'auto_buy': config_manager.config.bot_settings.auto_buy,
                 'auto_sell': config_manager.config.bot_settings.auto_sell,
+                'sell_strategy': config_manager.config.bot_settings.sell_strategy,
+                'sell_after_buys': config_manager.config.bot_settings.sell_after_buys,
+                'sell_after_hours': config_manager.config.bot_settings.sell_after_hours,
                 'token_age_filter': config_manager.config.bot_settings.token_age_filter,
                 'custom_days': config_manager.config.bot_settings.custom_days,
                 'include_pump_tokens': config_manager.config.bot_settings.include_pump_tokens,
@@ -363,8 +378,8 @@ class SniperBot:
             # Start buy activity monitoring
             self.buy_activity_monitoring_task = asyncio.create_task(self._monitor_buy_activity())
             
-            # Start price monitoring
-            await self.start_price_monitoring()
+            # Skip starting global background price monitoring
+            logger.info("⏭️ Skipping global background price monitoring (prices update only on our trades)")
             
             logger.info("✅ Monitoring started successfully")
             return True
@@ -598,17 +613,6 @@ class SniperBot:
         try:
             settings = config_manager.config.bot_settings
             
-            # Check if we already have a position for this token
-            if token.mint in self.positions and self.positions[token.mint].is_active:
-                logger.info(f"⏭️ Skipping auto-buy for {token.symbol} - already have position")
-                return
-            
-            # Check max positions limit
-            active_positions = len([p for p in self.positions.values() if p.is_active])
-            if active_positions >= settings.max_positions:
-                logger.info(f"⏭️ Skipping auto-buy for {token.symbol} - max positions reached ({active_positions}/{settings.max_positions})")
-                return
-            
             # Check wallet balance
             current_balance = self.get_wallet_balance_sync()
             if current_balance < settings.sol_per_snipe:
@@ -627,12 +631,19 @@ class SniperBot:
                     })
                 return
             
-            logger.info(f"🎯 Auto-buying {token.symbol} with {settings.sol_per_snipe} SOL...")
-            
-            # Execute the buy
-            # success, signature, token_amount = await self.trader.buy_token(token.mint, settings.sol_per_snipe)
-            # Execute the buy using the main buy_token method (which handles position tracking)
-            success = await self.buy_token(token.mint, settings.sol_per_snipe, token.symbol, token.name)
+            # Serialize auto-buys so we obey max_positions accurately
+            async with self._buy_lock:
+                # Re-check conditions inside the lock
+                if token.mint in self.positions and self.positions[token.mint].is_active:
+                    logger.info(f"⏭️ Skipping auto-buy for {token.symbol} - already have position")
+                    return
+                active_positions = len([p for p in self.positions.values() if p.is_active])
+                if active_positions >= settings.max_positions:
+                    logger.info(f"⏭️ Skipping auto-buy for {token.symbol} - max positions reached ({active_positions}/{settings.max_positions})")
+                    return
+                logger.info(f"🎯 Auto-buying {token.symbol} with {settings.sol_per_snipe} SOL...")
+                # Execute the buy using the main buy_token method (which handles position tracking)
+                success = await self.buy_token(token.mint, settings.sol_per_snipe, token.symbol, token.name)
             if success:
                 logger.info(f"✅ Auto-buy successful for {token.symbol}")
                 
@@ -703,21 +714,35 @@ class SniperBot:
             if success:
                 logger.info(f"✅ Buy successful! Signature: {signature}")
                 
-                # Create position tracking with token metadata
-                position = Position(
-                    token_mint=mint,
-                    token_symbol=token_symbol,  # Use provided token metadata
-                    token_name=token_name,      # Use provided token metadata
-                    entry_price=0.0,            # Will be updated from our own trade data
-                    entry_timestamp=int(time.time()),
-                    sol_amount=sol_amount,
-                    token_amount=0.0            # Will be updated from our own trade data
-                )
-                
-                self.positions[mint] = position
-                
-                logger.info(f"📊 Position created for {mint} ({token_symbol}) | SOL Amount: {sol_amount}")
-                logger.info(f"🔄 Waiting for WebSocket data to update entry price and token amount...")
+                # Create position tracking with token metadata (only if not already present)
+                created_new_position = False
+                if mint in self.positions and self.positions[mint].is_active:
+                    existing = self.positions[mint]
+                    # Update only missing metadata; do NOT overwrite existing entry_price/token_amount
+                    if (not existing.token_symbol) or existing.token_symbol == "Unknown":
+                        existing.token_symbol = token_symbol
+                    if (not existing.token_name) or existing.token_name == "Unknown":
+                        existing.token_name = token_name
+                    if existing.sol_amount <= 0:
+                        existing.sol_amount = sol_amount
+                    logger.info(f"↩️ Position for {mint} already exists; updated metadata without overwriting core fields")
+                else:
+                    position = Position(
+                        token_mint=mint,
+                        token_symbol=token_symbol,  # Use provided token metadata
+                        token_name=token_name,      # Use provided token metadata
+                        entry_price=0.0,            # Will be updated from our own trade data
+                        entry_timestamp=int(time.time()),
+                        sol_amount=sol_amount,
+                        token_amount=0.0,           # Will be updated from our own trade data
+                        entry_time=int(time.time()) # Entry time for time-based sell strategy
+                    )
+                    self.positions[mint] = position
+                    created_new_position = True
+                    logger.info(f"📊 Position created for {mint} ({token_symbol}) | SOL Amount: {sol_amount}")
+                    logger.info(f"🔄 Waiting for WebSocket data to update entry price and token amount...")
+                    # Use safe repr to avoid referencing undefined var when reusing existing
+                    logger.info(f"📊 Placeholder position created for {mint}; awaiting stream update")
                 
                 # Record the transaction (without token amount for now)
                 await self._record_transaction("buy", mint, sol_amount, signature, 0.0)
@@ -725,13 +750,11 @@ class SniperBot:
                 # Update PumpPortal monitoring to include this token
                 await self._update_pumpportal_monitoring()
                 
-                # Start price monitoring for this token (5 second interval)
-                await self._start_price_monitoring_for_token(mint)
-                
-                logger.info(f"🔄 Price monitoring started for {mint}")
+                # Do not start background price monitoring anymore
+                logger.info(f"⏭️ Skipping background price monitoring for {mint} (price will update only on our buys/sells)")
                 
                 # Send initial position creation to UI immediately
-                if self.ui_callback:
+                if created_new_position and self.ui_callback:
                     # Convert signature to string for UI
                     signature_str = str(signature) if signature else ""
                     
@@ -747,7 +770,10 @@ class SniperBot:
                     })
                     logger.info(f"📱 Sent initial position creation to UI for {mint} ({token_symbol})")
                 else:
-                    logger.warning(f"⚠️ No UI callback set for position update")
+                    if not created_new_position:
+                        logger.info(f"📱 Skipped initial 'buy' UI emission for {mint} (position already existed)")
+                    else:
+                        logger.warning(f"⚠️ No UI callback set for position update")
                 
                 return True
             else:
@@ -772,7 +798,7 @@ class SniperBot:
                 await self.monitor.add_account_trades_subscription([wallet_address])
                 logger.info(f"📡 Added account trades subscription: {wallet_address}")
             
-            # Subscribe to token trades (for monitoring other trades and 3-buy condition)
+            # Subscribe to token trades (for monitoring other trades and buy-count condition)
             if tokens_to_monitor:
                 await self.monitor.add_token_trades_subscription(tokens_to_monitor)
                 logger.info(f"📡 Added token trades subscription for {len(tokens_to_monitor)} tokens: {tokens_to_monitor}")
@@ -781,73 +807,9 @@ class SniperBot:
             logger.error(f"❌ Error updating PumpPortal monitoring: {e}")
 
     async def _start_price_monitoring_for_token(self, mint: str):
-        """Start price monitoring for a specific token"""
-        try:
-            logger.info(f"🔄 Starting price monitoring for {mint}")
-            
-            # Start continuous price monitoring for P&L tracking
-            async def price_callback(mint_address: str, price: float):
-                if mint_address in self.positions:
-                    position = self.positions[mint_address]
-                    position.current_price = price
-                    
-                    # Calculate P&L
-                    pnl_data = await self.helius_api.calculate_pnl(
-                        position.entry_price, 
-                        price, 
-                        position.token_amount
-                    )
-                    
-                    if pnl_data:
-                        position.current_pnl = pnl_data.get('pnl_absolute', 0)
-                        position.current_pnl_percent = pnl_data.get('pnl_percentage', 0)
-                        
-                        logger.info(f"💰 {mint_address}: ${price:.6f} | P&L: {position.current_pnl_percent:.2f}%")
-                        
-                        # Send price update to frontend
-                        if self.ui_callback:
-                            logger.info(f"💰 Sending price update to UI for {mint_address}")
-                            logger.info(f"📊 Price data: current_price={price}, pnl_percent={position.current_pnl_percent}")
-                            
-                            self.ui_callback('price_update', {
-                                'mint': mint_address,
-                                'current_price': price,
-                                'current_pnl': position.current_pnl,
-                                'current_pnl_percent': position.current_pnl_percent,
-                                'entry_price': position.entry_price,
-                                'token_amount': position.token_amount,
-                                'token_symbol': position.token_symbol,
-                                'token_name': position.token_name
-                            })
-                            logger.info(f"💰 Price update sent to UI for {mint_address}")
-                        else:
-                            logger.warning(f"⚠️ No UI callback available for price update")
-                        
-                        # Check for take profit or stop loss
-                        settings = config_manager.config.bot_settings
-                        if settings.take_profit and position.current_pnl_percent >= settings.take_profit:
-                            logger.info(f"🎯 Take profit triggered for {mint_address}")
-                            await self._execute_sell(mint_address, "take_profit")
-                        elif settings.stop_loss and position.current_pnl_percent <= -settings.stop_loss:
-                            logger.info(f"🛑 Stop loss triggered for {mint_address}")
-                            await self._execute_sell(mint_address, "stop_loss")
-            
-            # Start monitoring in background task
-            monitoring_task = asyncio.create_task(
-                self.helius_api.monitor_token_price(mint, price_callback, interval=5)
-            )
-            
-            # Store the task reference for potential cancellation later
-            if not hasattr(self, 'price_monitoring_tasks'):
-                self.price_monitoring_tasks = {}
-            self.price_monitoring_tasks[mint] = monitoring_task
-            
-            logger.info(f"🔄 Price monitoring started for {mint}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error starting price monitoring for {mint}: {e}")
-            import traceback
-            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        """Deprecated: background price monitoring is disabled."""
+        logger.info(f"⏭️ _start_price_monitoring_for_token called for {mint}, but background price monitoring is disabled.")
+        return
     
     async def _stop_price_monitoring_for_token(self, mint: str):
         """Stop price monitoring for a specific token"""
@@ -874,6 +836,32 @@ class SniperBot:
             
             position = self.positions[mint]
             logger.info(f"💸 Selling position for {position.token_symbol or mint}")
+            logger.info(f"💸 Token amount: {position.token_amount}")
+
+            # Safety: Ensure we have a non-zero token amount before attempting to sell
+            if position.token_amount <= 0:
+                try:
+                    logger.warning(f"⚠️ token_amount is 0 for {mint}. Attempting to refresh from wallet balances before selling...")
+                    wallet_address = str(self.keypair.pubkey())
+                    balances = await self.helius_api.get_wallet_token_balances(wallet_address)
+                    refreshed_amount = 0.0
+                    for item in balances:
+                        # Items are DAS assets; use helper to parse
+                        parsed = self.helius_api.parse_token_balance_for_position(item)
+                        if not parsed:
+                            continue
+                        if parsed.get('mint') == mint:
+                            refreshed_amount = parsed.get('token_amount', 0.0)
+                            break
+                    if refreshed_amount > 0:
+                        position.token_amount = refreshed_amount
+                        logger.info(f"✅ Refreshed token_amount for {mint}: {refreshed_amount:,.0f}")
+                    else:
+                        logger.error(f"❌ Unable to determine token amount for {mint}. Aborting sell to prevent 0-amount transaction.")
+                        return False
+                except Exception as e:
+                    logger.error(f"❌ Error refreshing token amount before sell for {mint}: {e}")
+                    return False
             
             # Get transaction type from settings
             settings = config_manager.config.bot_settings
@@ -935,9 +923,12 @@ class SniperBot:
     async def _monitor_positions(self):
         """Monitor active positions for profit/loss targets"""
         try:
+            logger.info(f"🔍 _monitor_positions called")
             settings = config_manager.config.bot_settings
             
-            while config_manager.config.bot_state.is_running:
+            # while config_manager.config.bot_state.is_running:
+            while True:
+                logger.info(f"🔍 _monitor_positions loop called")
                 for mint, position in self.positions.items():
                     if not position.is_active:
                         continue
@@ -956,10 +947,27 @@ class SniperBot:
                                 logger.info(f"🛑 Stop loss triggered for {position.token_symbol or mint}: {pnl_percent:.1f}%")
                                 await self.sell_token(mint)
                     
-                    # Check buy count condition (3 additional buyers)
-                    if position.buy_count_since_entry >= 3:
-                        logger.info(f"🎯 3 additional buyers reached for {position.token_symbol or mint} - Selling!")
-                        await self.sell_token(mint)
+                    # Check sell conditions based on strategy
+                    if settings.auto_sell:
+                        should_sell = False
+                        sell_reason = ""
+                        
+                        if settings.sell_strategy == "buy_count":
+                            # Sell after specified number of buys
+                            if position.buy_count_since_entry >= settings.sell_after_buys:
+                                should_sell = True
+                                sell_reason = f"{settings.sell_after_buys}-buy rule"
+                        elif settings.sell_strategy == "time_based":
+                            # Sell after specified number of hours
+                            current_time = int(time.time())
+                            hours_since_entry = (current_time - position.entry_time) / 3600
+                            if hours_since_entry >= settings.sell_after_hours:
+                                should_sell = True
+                                sell_reason = f"{settings.sell_after_hours}-hour rule"
+                        
+                        if should_sell:
+                            logger.info(f"🎯 {sell_reason} reached for {position.token_symbol or mint} - Selling!")
+                            await self.sell_token(mint)
                 
                 await asyncio.sleep(10)  # Check every 10 seconds
                 
@@ -991,11 +999,12 @@ class SniperBot:
                     
                     logger.info(f"📈 New buyer detected for {mint}: {buyer} (Total buyers since entry: {position.buy_count_since_entry})")
                     
-                    # Check if we should sell based on 3-buyer rule
+                    # Check if we should sell based on strategy
                     settings = config_manager.config.bot_settings
-                    if settings.auto_sell and position.buy_count_since_entry >= 3:
-                        logger.info(f"🎯 3-buyer sell condition met for {mint}, executing sell...")
-                        await self._execute_sell(mint, "3-buyer rule")
+                    if settings.auto_sell and settings.sell_strategy == "buy_count":
+                        if position.buy_count_since_entry >= settings.sell_after_buys:
+                            logger.info(f"🎯 {settings.sell_after_buys}-buy sell condition met for {mint}, executing sell...")
+                            await self._execute_sell(mint, f"{settings.sell_after_buys}-buy rule")
                         
         except Exception as e:
             logger.error(f"❌ Error handling trade activity: {e}")
@@ -1025,7 +1034,7 @@ class SniperBot:
                     logger.info(f"   Entry: {position.entry_price:.12f} SOL, Current: {price_sol:.12f} SOL")
                     logger.info(f"   P&L: {pnl_sol:.6f} SOL ({pnl_percent:+.2f}%)")
                     
-                    # Update UI with price and P&L update
+                    # Update UI with price and P&L update (always include position metadata as backup)
                     if self.ui_callback:
                         self.ui_callback('position_update', {
                             'action': 'price_update',
@@ -1034,9 +1043,15 @@ class SniperBot:
                             'current_price_usd': price_usd,
                             'pnl_sol': pnl_sol,
                             'pnl_percent': pnl_percent,
-                            'timestamp': int(time.time())
+                            'timestamp': int(time.time()),
+                            # BACKUP: Always include position metadata in case frontend missed metadata_update
+                            'entry_price': position.entry_price,
+                            'token_amount': position.token_amount,
+                            'token_symbol': position.token_symbol,
+                            'token_name': position.token_name,
+                            'sol_amount': position.sol_amount
                         })
-                        logger.info(f"📱 Sent price update to UI for {mint}")
+                        logger.info(f"📱 Sent price update to UI for {mint} (with backup metadata: entry_price={position.entry_price}, token_amount={position.token_amount})")
                 else:
                     logger.info(f"💰 Price updated for {mint} but no entry price available yet")
             else:
@@ -1085,7 +1100,10 @@ class SniperBot:
             logger.info(f"📋 Full trade data: {trade_data}")
             
             # Check if this is our own trade (from subscribeAccountTrade)
-            if trader == str(self.keypair.pubkey()):
+            wallet_pubkey = str(self.keypair.pubkey()) if self.keypair else None
+            logger.info(f"🔍 Comparing trader '{trader}' with our wallet '{wallet_pubkey}'")
+            
+            if trader == wallet_pubkey:
                 logger.info(f"🔄 Our own trade detected for {mint}, updating position...")
                 
                 # Check if we have a position for this token
@@ -1103,6 +1121,7 @@ class SniperBot:
                             entry_price = sol_amount / token_amount
                             position.entry_price = entry_price
                             position.token_amount = token_amount  # Update token amount from WebSocket data
+                            # Ensure entry time is set for time-based sell strategy
                             logger.info(f"💰 Updated entry price for {mint}: ${entry_price:.6f}")
                             logger.info(f"💰 Updated token amount for {mint}: {token_amount:,.0f}")
                             
@@ -1161,7 +1180,8 @@ class SniperBot:
                             entry_price=entry_price,
                             entry_timestamp=int(time.time()),
                             sol_amount=sol_amount,
-                            token_amount=token_amount
+                            token_amount=token_amount,
+                            entry_time=int(time.time())
                         )
                         
                         self.positions[mint] = position
@@ -1188,12 +1208,33 @@ class SniperBot:
                         # Start price monitoring for this token
                         # await self._start_price_monitoring_for_token(mint)
                 
+                # If this was our own SELL, don't emit price updates to the UI; position update occurs elsewhere
+                if tx_type == 'sell':
+                    logger.info(f"🔕 Skipping price_update emission for our own sell on {mint}")
+                    return
                 return  # Don't process our own trades for buy counting
             
             # Check if this is a token we have a position in (from subscribeTokenTrade)
             if mint in self.positions and self.positions[mint].is_active:
                 position = self.positions[mint]
                 
+                # Backfill missing token_amount from trade stream if we don't have it yet
+                try:
+                    if (position.token_amount is None or position.token_amount <= 0) and trade_info.token_amount and trade_info.token_amount > 0:
+                        position.token_amount = trade_info.token_amount
+                        logger.info(f"✅ Backfilled token_amount for {mint} from trade update: {position.token_amount:,.0f}")
+                        # Also update the last transaction entry in the UI with real token amount
+                        await self._update_transaction_with_token_amount(mint, position.token_amount)
+                        # Notify UI of metadata update (no entry_price change)
+                        if self.ui_callback:
+                            self.ui_callback('position_update', {
+                                'action': 'metadata_update',
+                                'mint': mint,
+                                'token_amount': position.token_amount
+                            })
+                except Exception as backfill_err:
+                    logger.warning(f"⚠️ Could not backfill token_amount for {mint}: {backfill_err}")
+
                 # Update position with latest price from websocket
                 if trade_info.price > 0:
                     # Update current price for P&L calculations
@@ -1227,7 +1268,7 @@ class SniperBot:
                 logger.info(f"📈 Token trade detected for our position: {mint}")
                 logger.info(f"📊 Current position - Symbol: {position.token_symbol}, Entry Price: ${position.entry_price:.6f}, Token Amount: {position.token_amount:,.0f}")
                 
-                # For buy transactions, track buy activity and check 3-buy rule
+                # For buy transactions, track buy activity and check buy-count rule
                 if tx_type == 'buy':
                     # Track this buy in our position
                     position.buy_count_since_entry += 1
@@ -1240,16 +1281,27 @@ class SniperBot:
                     logger.info(f"   Trade SOL Amount: {trade_data['solAmount']}")
                     logger.info(f"   Trade Token Amount: {trade_data.get('tokenAmount', 0.0)}")
                     
-                    # Use HeliusAPI's buy count method for 3-buy rule
+                    # Use HeliusAPI's buy count method for buy-count rule
                     buy_count = self.helius_api.get_buy_count_for_token(mint, self.trade_history)
                     
                     logger.info(f"📈 PumpPortal: {buy_count} total buys detected for {mint}")
                     
-                    # Check if we should sell based on 3-buyer rule
+                    # Check if we should sell based on configured strategy (buy-count or time-based)
                     settings = config_manager.config.bot_settings
-                    if settings.auto_sell and position.buy_count_since_entry >= 3:
-                        logger.info(f"🎯 3-buyer sell condition met for {mint}, executing sell...")
-                        await self._execute_sell(mint, "3-buyer rule")
+                    if settings.auto_sell:
+                        # Ensure entry_time is initialized for time-based checks
+                        if not position.entry_time:
+                            position.entry_time = position.entry_timestamp or int(time.time())
+                        
+                        if settings.sell_strategy == "buy_count":
+                            if position.buy_count_since_entry >= settings.sell_after_buys:
+                                logger.info(f"🎯 {settings.sell_after_buys}-buyer sell condition met for {mint}, executing sell...")
+                                await self._execute_sell(mint, f"{settings.sell_after_buys}-buyer rule")
+                        elif settings.sell_strategy == "time_based":
+                            hours_since_entry = (int(time.time()) - position.entry_time) / 3600
+                            if hours_since_entry >= settings.sell_after_hours:
+                                logger.info(f"⏰ {settings.sell_after_hours}-hour time-based sell condition met for {mint}, executing sell...")
+                                await self._execute_sell(mint, f"{settings.sell_after_hours}-hour rule")
             
             # Update UI if callback exists
             if self.ui_callback:
@@ -1288,7 +1340,7 @@ class SniperBot:
                     
                     # Log current buy count for debugging
                     if position.buy_count_since_entry > 0:
-                        logger.debug(f"📊 {position.token_symbol or mint}: {position.buy_count_since_entry}/3 buyers")
+                        logger.debug(f"📊 {position.token_symbol or mint}: {position.buy_count_since_entry}/{config_manager.config.bot_settings.sell_after_buys} buyers")
                 
                 await asyncio.sleep(5)  # Check every 5 seconds
                 
@@ -1403,27 +1455,14 @@ class SniperBot:
             logger.error(f"❌ Error updating position prices: {e}")
     
     async def start_price_monitoring(self):
-        """Start real-time price monitoring for active positions using SolanaTracker API"""
-        try:
-            logger.info("💰 Starting SolanaTracker price monitoring...")
-            
-            # Start price monitoring for all active positions
-            for mint in self.positions.keys():
-                if self.positions[mint].is_active:
-                    await self._start_price_monitoring_for_token(mint)
-            
-            logger.info("✅ Started SolanaTracker price monitoring")
-            
-        except Exception as e:
-            logger.error(f"❌ Error starting price monitoring: {e}")
+        """Deprecated: global background price monitoring is disabled."""
+        logger.info("⏭️ start_price_monitoring called but background monitoring is disabled.")
+        return
     
     async def stop_price_monitoring(self):
-        """Stop real-time price monitoring"""
-        try:
-            # Price monitoring tasks will be cancelled when positions are closed
-            logger.info("✅ Stopped SolanaTracker price monitoring")
-        except Exception as e:
-            logger.error(f"❌ Error stopping price monitoring: {e}")
+        """Deprecated: background price monitoring is disabled."""
+        logger.info("⏭️ stop_price_monitoring called but background monitoring is disabled.")
+        return
     
     async def _record_transaction(self, action: str, mint: str, sol_amount: float, signature, token_amount: float = 0):
         """Record a transaction for history"""
@@ -1487,6 +1526,7 @@ class SniperBot:
             
             logger.info(f"💰 Priority fee: {priority_fee} SOL")
             
+            logger.info(f"💰 Token amount: {position.token_amount}")
             # Use trader to execute sell with transaction type from settings
             success, signature, sol_received = await self.trader.sell_token(
                 mint, 

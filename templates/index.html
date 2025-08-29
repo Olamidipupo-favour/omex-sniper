@@ -139,6 +139,28 @@
                             </div>
                         </div>
 
+                        <!-- Sell Strategy Settings -->
+                        <div class="section-header">
+                            <h4><i class="fas fa-chart-line"></i> Sell Strategy</h4>
+                        </div>
+                        <div class="sell-strategy-settings">
+                            <div class="setting-item">
+                                <label>Sell Strategy</label>
+                                <select id="sellStrategy" class="input-field">
+                                    <option value="buy_count">Sell After Buy Count</option>
+                                    <option value="time_based">Sell After Time</option>
+                                </select>
+                            </div>
+                            <div class="setting-item" id="sellAfterBuysContainer">
+                                <label>Sell After Buys</label>
+                                <input type="number" id="sellAfterBuys" min="1" max="20" value="5" class="input-field">
+                            </div>
+                            <div class="setting-item" id="sellAfterHoursContainer" style="display: none;">
+                                <label>Sell After Hours</label>
+                                <input type="number" id="sellAfterHours" min="0.1" max="168" step="0.1" value="5.0" class="input-field">
+                            </div>
+                        </div>
+
                         <!-- Token Age Filter Settings -->
                         <div class="section-header">
                             <h4><i class="fas fa-filter"></i> Token Age Filter</h4>
