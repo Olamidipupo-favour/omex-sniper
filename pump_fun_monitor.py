@@ -683,6 +683,7 @@ class PumpPortalMonitor:
             # IMMEDIATELY calculate price from websocket data before any other processing
             mint = data.get("mint", "")
             if mint:
+                logger.info(f"🔍 Processing data: {data}")
                 # Calculate price using bonding curve data (most accurate)
                 v_sol_in_bonding_curve = data.get("vSolInBondingCurve", 0.0)
                 v_tokens_in_bonding_curve = data.get("vTokensInBondingCurve", 0.0)
@@ -1276,21 +1277,22 @@ class PumpPortalMonitor:
                     except Exception as e:
                         logger.warning(f"⚠️ Error unsubscribing from new tokens: {e}")
                 
-                # Unsubscribe from token trades
+                # Keep token and account trades subscriptions active (don't unsubscribe)
                 if self.monitored_tokens:
-                    try:
-                        token_list = list(self.monitored_tokens)
-                        unsubscribe_token_trades = {
-                            "method": "unsubscribeTokenTrade", 
-                            "keys": token_list
-                        }
-                        self.ws_app.send(json.dumps(unsubscribe_token_trades))
-                        logger.info(f"📤 Unsubscribed from token trades: {token_list}")
-                        self.monitored_tokens.clear()
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error unsubscribing from token trades: {e}")
+                #     try:
+                #         token_list = list(self.monitored_tokens)
+                #         unsubscribe_token_trades = {
+                #             "method": "unsubscribeTokenTrade", 
+                #             "keys": token_list
+                #         }
+                #         self.ws_app.send(json.dumps(unsubscribe_token_trades))
+                #         logger.info(f"📤 Unsubscribed from token trades: {token_list}")
+                #         self.monitored_tokens.clear()
+                #     except Exception as e:
+                #         logger.warning(f"⚠️ Error unsubscribing from token trades: {e}")
                 
-                # Keep account trades subscription active (don't unsubscribe)
+                # # Keep account trades subscription active (don't unsubscribe)
+                    logger.info(f"📡 Keeping token trades subscriptions active for: {list(self.monitored_tokens)}")
                 if self.monitored_accounts:
                     logger.info(f"📡 Keeping account trades subscription active for: {list(self.monitored_accounts)}")
             
@@ -1298,6 +1300,28 @@ class PumpPortalMonitor:
             
         except Exception as e:
             logger.error(f"❌ Error in synchronous unsubscription: {e}")
+
+    def remove_token_trade_subscription_sync(self, mint: str) -> bool:
+        """Unsubscribe from a single token's trade stream synchronously."""
+        try:
+            if not mint:
+                return False
+            if self.ws_app and self.ws_app.sock:
+                payload = {
+                    "method": "unsubscribeTokenTrade",
+                    "keys": [mint]
+                }
+                self.ws_app.send(json.dumps(payload))
+                if mint in self.monitored_tokens:
+                    self.monitored_tokens.discard(mint)
+                logger.info(f"📤 Unsubscribed from token trades for {mint}")
+                return True
+            else:
+                logger.warning("❌ WebSocket not connected, cannot unsubscribe token trade")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Error unsubscribing token {mint}: {e}")
+            return False
     
     def stop_monitoring(self):
         """Stop monitoring but keep WebSocket connection alive"""

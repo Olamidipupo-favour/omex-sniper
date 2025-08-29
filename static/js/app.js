@@ -60,6 +60,27 @@ class SniperBotApp {
         setInterval(() => this.refreshSolBalance(), 3000);
     }
 
+    async deletePosition(mint) {
+        if (!mint) return;
+        const confirmDelete = confirm('Remove this position from the table? This does not sell on-chain.');
+        if (!confirmDelete) return;
+        try {
+            const res = await fetch(`/api/positions/${mint}`, { method: 'DELETE' });
+            const json = await res.json();
+            if (json?.success) {
+                // Remove locally
+                this.positions = this.positions.filter(p => (p.mint !== mint && p.token_mint !== mint));
+                this.updatePositionsTable();
+                this.updateTotalPnL();
+                this.showToast('Position removed', 'success');
+            } else {
+                this.showToast(json?.error || 'Failed to remove position', 'error');
+            }
+        } catch (e) {
+            this.showToast('Failed to remove position', 'error');
+        }
+    }
+
     async refreshSolUsdPrice() {
         try {
             // Simple public endpoint; if it fails we'll keep previous value
@@ -92,11 +113,11 @@ class SniperBotApp {
 
     async refreshSolBalance() {
         try {
-            const res = await fetch('/api/status');
+            const res = await fetch('/api/wallet/sol_balance');
             if (!res.ok) return;
             const json = await res.json();
-            if (json?.success && json?.data?.sol_balance !== undefined) {
-                this.actualSolBalance = Number(json.data.sol_balance) || 0;
+            if (json?.success && json?.sol_balance !== undefined) {
+                this.actualSolBalance = Number(json.sol_balance) || 0;
                 this.updateSolBalanceDisplay(this.actualSolBalance);
             }
         } catch (_) {}
@@ -458,7 +479,7 @@ class SniperBotApp {
                 auto_sell: document.getElementById('autoSell').checked,
                 sell_strategy: document.getElementById('sellStrategy').value,
                 sell_after_buys: parseInt(document.getElementById('sellAfterBuys').value),
-                sell_after_hours: parseFloat(document.getElementById('sellAfterHours').value),
+                sell_after_seconds: parseInt(document.getElementById('sellAfterSeconds')?.value || '0') || (parseInt(document.getElementById('sellAfterHours')?.value || '0') * 3600) || 0,
                 token_age_filter: document.getElementById('tokenAgeFilter').value,
                 custom_days: parseInt(document.getElementById('customDays').value),
                 include_pump_tokens: document.getElementById('includePumpTokens').checked,
@@ -1208,7 +1229,10 @@ class SniperBotApp {
                 <td class="${pnl >= 0 ? 'positive' : 'negative'}">${pnlPercent.toFixed(2)}% (${this.formatSolAmount(pnl)})</td>
                 <td><span class="status active">Active</span></td>
                 <td>
-                    <button class="btn-sell" onclick="app.sellPosition('${position.mint || position.token_mint}')">Sell</button>
+                    <div class="row-actions">
+                        <button class="btn-sell" onclick="app.sellPosition('${position.mint || position.token_mint}')">Sell</button>
+                        <button class="btn-delete" onclick="app.deletePosition('${position.mint || position.token_mint}')">Delete</button>
+                    </div>
                 </td>
             `;
             
@@ -1221,9 +1245,12 @@ class SniperBotApp {
         if (summaryElement) {
             const totalInvestedText = this.formatSolAmount(totalInvested);
             const totalPnlText = this.formatSolAmount(totalPnl);
+            // Total Earned here interpreted as cumulative unrealized P&L across active positions
+            const totalEarnedText = totalPnlText;
             summaryElement.innerHTML = `
                 Total Invested: ${totalInvestedText} | 
-                P&L: <span class="${totalPnl >= 0 ? 'positive' : 'negative'}">${totalPnlText}</span>
+                P&L: <span class="${totalPnl >= 0 ? 'positive' : 'negative'}">${totalPnlText}</span> | 
+                Total Earned: <span class="${totalPnl >= 0 ? 'positive' : 'negative'}">${totalEarnedText}</span>
             `;
             console.log('✅ Updated positions summary');
         }
@@ -1452,6 +1479,8 @@ class SniperBotApp {
                 console.log('Status response:', result);
                 if (result.success) {
                     this.updateUIFromStatus(result.data);
+                    // Preload positions after status to populate positions table on refresh
+                    this.loadPositionsFromAPI();
                 } else {
                     console.error('Failed to load bot status:', result.error);
                     this.addLog('Failed to load bot status', 'error');
@@ -1461,6 +1490,64 @@ class SniperBotApp {
                 console.error('Error loading initial data:', error);
                 this.addLog('Failed to connect to backend', 'error');
             });
+    }
+
+    async loadPositionsFromAPI() {
+        try {
+            const res = await fetch('/api/positions');
+            if (!res.ok) return;
+            const json = await res.json();
+            if (!json?.success || !Array.isArray(json.positions)) return;
+
+            const mapNum = (v, d = 0) => (typeof v === 'number' && isFinite(v) ? v : d);
+            const pick = (obj, keys, d = 0) => {
+                for (const k of keys) {
+                    if (obj && obj[k] !== undefined && obj[k] !== null) return obj[k];
+                }
+                return d;
+            };
+
+            this.positions = json.positions.map(p => {
+                const entryPrice = pick(p, ['entry_price', 'entry_price_sol', 'entryPrice'], 0);
+                const currentPrice = pick(p, ['current_price', 'current_price_sol', 'price'], 0);
+                const tokenAmt = pick(p, ['token_amount', 'amount_tokens', 'tokens'], 0);
+                const solAmt = pick(p, ['sol_amount', 'amount_sol', 'invested_sol'], 0);
+                const ts = pick(p, ['entry_timestamp', 'entry_time', 'timestamp'], Date.now() / 1000);
+                const pnlSol = pick(p, ['current_pnl', 'pnl_sol', 'pnl'], 0);
+                const pnlPct = pick(p, ['current_pnl_percent', 'pnl_percent'], 0);
+
+                // Derive pnl if missing and we have entry/current and amount
+                let derivedPnlSol = pnlSol;
+                let derivedPnlPct = pnlPct;
+                if ((!pnlSol || !isFinite(pnlSol)) && entryPrice > 0 && tokenAmt > 0 && currentPrice > 0) {
+                    derivedPnlSol = (currentPrice - entryPrice) * tokenAmt;
+                }
+                if ((!pnlPct || !isFinite(pnlPct)) && entryPrice > 0 && currentPrice > 0) {
+                    derivedPnlPct = ((currentPrice - entryPrice) / entryPrice) * 100;
+                }
+
+                return {
+                    mint: p.mint || p.token_mint,
+                    token_mint: p.token_mint || p.mint,
+                    token_symbol: p.token_symbol || p.symbol || 'Unknown',
+                    token_name: p.token_name || p.name || 'Unknown',
+                    entry_price: mapNum(entryPrice, 0),
+                    current_price: mapNum(currentPrice, 0),
+                    token_amount: mapNum(tokenAmt, 0),
+                    sol_amount: mapNum(solAmt, 0),
+                    current_pnl: mapNum(derivedPnlSol, 0),
+                    current_pnl_percent: mapNum(derivedPnlPct, 0),
+                    is_active: p.is_active !== false,
+                    entry_timestamp: mapNum(ts, Date.now() / 1000),
+                    signature: p.signature || null
+                };
+            });
+
+            this.updatePositionsTable();
+            this.updateTotalPnL();
+        } catch (e) {
+            console.error('Failed to preload positions:', e);
+        }
     }
     
     updateUIFromStatus(status) {
@@ -1501,7 +1588,48 @@ class SniperBotApp {
             document.getElementById('autoSell').checked = status.settings.auto_sell !== false; // Default to true
             document.getElementById('sellStrategy').value = status.settings.sell_strategy || 'buy_count';
             document.getElementById('sellAfterBuys').value = status.settings.sell_after_buys || 5;
-            document.getElementById('sellAfterHours').value = status.settings.sell_after_hours || 5.0;
+            // Support both legacy hours and new seconds
+            const legacyHours = status.settings.sell_after_hours;
+            const seconds = status.settings.sell_after_seconds;
+            const effectiveSeconds = typeof seconds === 'number' ? seconds : Math.round((legacyHours || 5) * 3600);
+            const secondsInput = document.getElementById('sellAfterSeconds') || document.getElementById('sellAfterHours');
+            if (secondsInput) secondsInput.value = effectiveSeconds;
+
+            // Enhance UX: show helper selectors (minutes/hours) that compute seconds
+            const secondsField = document.getElementById('sellAfterSeconds');
+            if (secondsField && !secondsField.dataset.enhanced) {
+                secondsField.dataset.enhanced = '1';
+                const container = secondsField.parentElement;
+                const helper = document.createElement('div');
+                helper.className = 'time-helper';
+                helper.innerHTML = `
+                    <div class="time-inputs">
+                        <input type="number" id="sellMinutes" min="0" placeholder="Minutes" class="input-field small" style="width:110px;margin-top:6px;"/>
+                        <input type="number" id="sellHours" min="0" placeholder="Hours" class="input-field small" style="width:110px;margin-top:6px;margin-left:8px;"/>
+                        <button id="applyTimePreset" class="btn" style="margin-left:8px;margin-top:6px;">Apply</button>
+                        <div class="presets" style="margin-top:6px;">
+                            <button class="btn-tiny" data-seconds="60">1m</button>
+                            <button class="btn-tiny" data-seconds="300">5m</button>
+                            <button class="btn-tiny" data-seconds="900">15m</button>
+                            <button class="btn-tiny" data-seconds="3600">1h</button>
+                            <button class="btn-tiny" data-seconds="10800">3h</button>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(helper);
+
+                const apply = helper.querySelector('#applyTimePreset');
+                const mins = helper.querySelector('#sellMinutes');
+                const hrs = helper.querySelector('#sellHours');
+                const setSeconds = (s) => { secondsField.value = Math.max(1, parseInt(s) || 0); };
+                apply.addEventListener('click', () => {
+                    const total = (parseInt(mins.value || '0') * 60) + (parseInt(hrs.value || '0') * 3600);
+                    setSeconds(total);
+                });
+                helper.querySelectorAll('.btn-tiny').forEach(btn => {
+                    btn.addEventListener('click', () => setSeconds(btn.dataset.seconds));
+                });
+            }
             document.getElementById('tokenAgeFilter').value = status.settings.token_age_filter || 'new_only';
             document.getElementById('customDays').value = status.settings.custom_days || 7;
             document.getElementById('includePumpTokens').checked = status.settings.include_pump_tokens !== false; // Default to true

@@ -208,7 +208,7 @@ class SniperBot:
                 'auto_sell': config_manager.config.bot_settings.auto_sell,
                 'sell_strategy': config_manager.config.bot_settings.sell_strategy,
                 'sell_after_buys': config_manager.config.bot_settings.sell_after_buys,
-                'sell_after_hours': config_manager.config.bot_settings.sell_after_hours,
+                'sell_after_seconds': getattr(config_manager.config.bot_settings, 'sell_after_seconds', 18000),
                 'token_age_filter': config_manager.config.bot_settings.token_age_filter,
                 'custom_days': config_manager.config.bot_settings.custom_days,
                 'include_pump_tokens': config_manager.config.bot_settings.include_pump_tokens,
@@ -226,6 +226,63 @@ class SniperBot:
         except Exception as e:
             logger.error(f"❌ Error updating settings: {e}")
             return False
+
+    def delete_position(self, mint: str) -> bool:
+        """Remove a position from memory/state without selling on-chain."""
+        try:
+            if not mint:
+                return False
+            pos = self.positions.pop(mint, None)
+            if pos is None:
+                # try alternative key field
+                to_delete = None
+                for k, v in self.positions.items():
+                    if getattr(v, 'token_mint', None) == mint:
+                        to_delete = k
+                        break
+                if to_delete:
+                    pos = self.positions.pop(to_delete, None)
+            if pos:
+                logger.info(f"🗑️ Deleted position for {pos.token_symbol or mint}")
+                # Notify UI
+                if self.ui_callback:
+                    self.ui_callback('position_update', {
+                        'action': 'deleted',
+                        'mint': mint
+                    })
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error deleting position {mint}: {e}")
+            return False
+
+    def get_positions_snapshot(self) -> List[Dict[str, Any]]:
+        """Return a serializable snapshot of current in-memory positions."""
+        try:
+            snapshot: List[Dict[str, Any]] = []
+            for mint, pos in self.positions.items():
+                # Only include active positions
+                if not getattr(pos, 'is_active', True):
+                    continue
+                snapshot.append({
+                    'mint': mint,
+                    'token_mint': getattr(pos, 'token_mint', mint),
+                    'token_symbol': getattr(pos, 'token_symbol', 'Unknown'),
+                    'token_name': getattr(pos, 'token_name', 'Unknown'),
+                    'entry_price': getattr(pos, 'entry_price', 0.0),
+                    'current_price': getattr(pos, 'current_price', 0.0),
+                    'token_amount': getattr(pos, 'token_amount', 0.0),
+                    'sol_amount': getattr(pos, 'sol_amount', 0.0),
+                    'current_pnl': getattr(pos, 'current_pnl', getattr(pos, 'pnl_sol', 0.0) or 0.0),
+                    'current_pnl_percent': getattr(pos, 'current_pnl_percent', getattr(pos, 'pnl_percent', 0.0) or 0.0),
+                    'is_active': getattr(pos, 'is_active', True),
+                    'entry_timestamp': getattr(pos, 'entry_timestamp', getattr(pos, 'entry_time', 0) or 0),
+                    'signature': getattr(pos, 'signature', None)
+                })
+            return snapshot
+        except Exception as e:
+            logger.error(f"❌ Error building positions snapshot: {e}")
+            return []
     
     async def _load_historical_tokens(self):
         """Load historical tokens based on age filter settings"""
@@ -353,12 +410,26 @@ class SniperBot:
             token_age_filter = settings.token_age_filter
             
             logger.info(f"🔍 Token age filter: {token_age_filter}")
-            # Load historical tokens if using historical filter
+            
+            # Load historical tokens if using historical filter (in background)
             if token_age_filter != "new_only":
-                logger.info(f"📚 Loading historical tokens for {token_age_filter} filter...")
+                logger.info(f"📚 Loading historical tokens for {token_age_filter} filter (background)...")
+                # Immediately connect WebSocket and subscribe to account trades (historical mode)
+                try:
+                    initial_subscriptions = {}
+                    if self.keypair:
+                        wallet_address = str(self.keypair.pubkey())
+                        initial_subscriptions['account_addresses'] = [wallet_address]
+                        logger.info(f"📡 Historical mode: will subscribe to account trades for {wallet_address}")
+                    # Start monitor in background to avoid blocking
+                    if initial_subscriptions:
+                        self._pumpportal_monitor_task = asyncio.create_task(self.monitor.start_monitoring(initial_subscriptions))
+                        logger.info("🧵 Launched PumpPortal monitoring task (account trades only) for historical mode")
+                except Exception as e:
+                    logger.error(f"❌ Failed to start PumpPortal monitoring in historical branch: {e}")
                 # Reset cancellation flag
                 self._historical_loading_cancelled = False
-                # Store the task for potential cancellation
+                # Store the task for potential cancellation and DO NOT await
                 self._historical_loading_task = asyncio.create_task(self._load_historical_tokens())
                 # Wait for it to complete (but it can be cancelled)
                 try:
@@ -718,6 +789,9 @@ class SniperBot:
                 created_new_position = False
                 if mint in self.positions and self.positions[mint].is_active:
                     existing = self.positions[mint]
+                    logger.info(f"🔄 Existing position before update: {existing}")
+                    logger.info(f"token symbol before update: {token_symbol}")
+                    logger.info(f"token name before update: {token_name}")
                     # Update only missing metadata; do NOT overwrite existing entry_price/token_amount
                     if (not existing.token_symbol) or existing.token_symbol == "Unknown":
                         existing.token_symbol = token_symbol
@@ -725,6 +799,9 @@ class SniperBot:
                         existing.token_name = token_name
                     if existing.sol_amount <= 0:
                         existing.sol_amount = sol_amount
+                    logger.info(f"token symbol after update: {token_symbol}")
+                    logger.info(f"token name after update: {token_name}")
+                    logger.info(f"🔄 Existing position after update: {existing}")
                     logger.info(f"↩️ Position for {mint} already exists; updated metadata without overwriting core fields")
                 else:
                     position = Position(
@@ -742,6 +819,7 @@ class SniperBot:
                     logger.info(f"📊 Position created for {mint} ({token_symbol}) | SOL Amount: {sol_amount}")
                     logger.info(f"🔄 Waiting for WebSocket data to update entry price and token amount...")
                     # Use safe repr to avoid referencing undefined var when reusing existing
+                    logger.info(f"📊 Position created: {position}")
                     logger.info(f"📊 Placeholder position created for {mint}; awaiting stream update")
                 
                 # Record the transaction (without token amount for now)
@@ -793,15 +871,27 @@ class SniperBot:
             # Get our wallet address for account monitoring
             wallet_address = str(self.keypair.pubkey()) if self.keypair else None
             
-            # Subscribe to our own account trades (for entry price and metadata)
-            if wallet_address:
-                await self.monitor.add_account_trades_subscription([wallet_address])
-                logger.info(f"📡 Added account trades subscription: {wallet_address}")
-            
-            # Subscribe to token trades (for monitoring other trades and buy-count condition)
-            if tokens_to_monitor:
-                await self.monitor.add_token_trades_subscription(tokens_to_monitor)
-                logger.info(f"📡 Added token trades subscription for {len(tokens_to_monitor)} tokens: {tokens_to_monitor}")
+            # Ensure WebSocket is connected; if not, start it with appropriate initial subscriptions
+            token_age_filter = config_manager.config.bot_settings.token_age_filter
+            if not self.monitor.is_websocket_connected():
+                initial_subs = {
+                    # Only subscribe to new tokens for 'new_only'; skip for historical filters
+                    'subscribe_new_tokens': token_age_filter == "new_only",
+                    'account_addresses': [wallet_address] if wallet_address else [],
+                    'token_mints': tokens_to_monitor
+                }
+                logger.info("🔌 WebSocket not connected. Starting monitor with initial subscriptions for trades only...")
+                await self.monitor.start_monitoring(initial_subs)
+            else:
+                # Subscribe to our own account trades (for entry price and metadata)
+                if wallet_address:
+                    await self.monitor.add_account_trades_subscription([wallet_address])
+                    logger.info(f"📡 Added account trades subscription: {wallet_address}")
+                
+                # Subscribe to token trades (for monitoring other trades and buy-count condition)
+                if tokens_to_monitor:
+                    await self.monitor.add_token_trades_subscription(tokens_to_monitor)
+                    logger.info(f"📡 Added token trades subscription for {len(tokens_to_monitor)} tokens: {tokens_to_monitor}")
                 
         except Exception as e:
             logger.error(f"❌ Error updating PumpPortal monitoring: {e}")
@@ -826,6 +916,7 @@ class SniperBot:
     async def sell_token(self, mint: str) -> bool:
         """Sell a token position"""
         try:
+            logger.info(f"💸 sell_token called for {mint}")
             if not self.keypair:
                 logger.error("❌ No wallet connected")
                 return False
@@ -910,6 +1001,12 @@ class SniperBot:
                         'buy_count': position.buy_count_since_entry,
                         'timestamp': int(datetime.now().timestamp())
                     })
+
+                # Stop listening to this token's trades after it becomes inactive
+                try:
+                    self.monitor.remove_token_trade_subscription_sync(mint)
+                except Exception as _:
+                    pass
                 
                 return True
             else:
@@ -958,12 +1055,13 @@ class SniperBot:
                                 should_sell = True
                                 sell_reason = f"{settings.sell_after_buys}-buy rule"
                         elif settings.sell_strategy == "time_based":
-                            # Sell after specified number of hours
+                            # Sell after specified number of seconds
                             current_time = int(time.time())
-                            hours_since_entry = (current_time - position.entry_time) / 3600
-                            if hours_since_entry >= settings.sell_after_hours:
+                            seconds_since_entry = current_time - position.entry_time
+                            target_seconds = getattr(settings, 'sell_after_seconds', 18000)
+                            if seconds_since_entry >= target_seconds:
                                 should_sell = True
-                                sell_reason = f"{settings.sell_after_hours}-hour rule"
+                                sell_reason = f"{target_seconds}-second rule"
                         
                         if should_sell:
                             logger.info(f"🎯 {sell_reason} reached for {position.token_symbol or mint} - Selling!")
@@ -1001,10 +1099,27 @@ class SniperBot:
                     
                     # Check if we should sell based on strategy
                     settings = config_manager.config.bot_settings
-                    if settings.auto_sell and settings.sell_strategy == "buy_count":
-                        if position.buy_count_since_entry >= settings.sell_after_buys:
-                            logger.info(f"🎯 {settings.sell_after_buys}-buy sell condition met for {mint}, executing sell...")
-                            await self._execute_sell(mint, f"{settings.sell_after_buys}-buy rule")
+                    if settings.auto_sell:
+                        if settings.sell_strategy == "buy_count":
+                            if position.buy_count_since_entry >= settings.sell_after_buys:
+                                logger.info(f"🎯 {settings.sell_after_buys}-buy sell condition met for {mint}, executing sell...")
+                                await self._execute_sell(mint, f"{settings.sell_after_buys}-buy rule")
+                        elif settings.sell_strategy == "time_based":
+                            seconds_since_entry = int(time.time()) - position.entry_time
+                            target_seconds = getattr(settings, 'sell_after_seconds', 18000)
+                            if seconds_since_entry >= target_seconds:
+                                logger.info(f"⏰ {target_seconds}-second time-based sell condition met for {mint}, executing sell...")
+                                await self._execute_sell(mint, f"{target_seconds}-second rule")
+
+                        # Also enforce TP/SL immediately on trade activity
+                        if position.entry_price > 0 and position.current_price > 0:
+                            pnl_percent = ((position.current_price - position.entry_price) / position.entry_price) * 100
+                            if pnl_percent >= settings.profit_target_percent:
+                                logger.info(f"🎯 Profit target reached on trade activity for {mint}: {pnl_percent:.1f}%")
+                                await self._execute_sell(mint, f"profit target {settings.profit_target_percent}%")
+                            elif pnl_percent <= -settings.stop_loss_percent:
+                                logger.info(f"🛑 Stop loss triggered on trade activity for {mint}: {pnl_percent:.1f}%")
+                                await self._execute_sell(mint, f"stop loss {settings.stop_loss_percent}%")
                         
         except Exception as e:
             logger.error(f"❌ Error handling trade activity: {e}")
@@ -1033,6 +1148,24 @@ class SniperBot:
                     logger.info(f"💰 P&L Update for {mint}:")
                     logger.info(f"   Entry: {position.entry_price:.12f} SOL, Current: {price_sol:.12f} SOL")
                     logger.info(f"   P&L: {pnl_sol:.6f} SOL ({pnl_percent:+.2f}%)")
+
+                    # Enforce TP/SL immediately on price update
+                    settings = config_manager.config.bot_settings
+                    if settings.auto_sell:
+                        if pnl_percent >= settings.profit_target_percent:
+                            logger.info(f"🎯 Profit target reached on price update for {mint}: {pnl_percent:.1f}%")
+                            try:
+                                loop = asyncio.get_running_loop()
+                                asyncio.create_task(self.sell_token(mint))
+                            except RuntimeError:
+                                asyncio.run(self.sell_token(mint))
+                        elif pnl_percent <= -settings.stop_loss_percent:
+                            logger.info(f"🛑 Stop loss triggered on price update for {mint}: {pnl_percent:.1f}%")
+                            try:
+                                loop = asyncio.get_running_loop()
+                                asyncio.create_task(self.sell_token(mint))
+                            except RuntimeError:
+                                asyncio.run(self.sell_token(mint))
                     
                     # Update UI with price and P&L update (always include position metadata as backup)
                     if self.ui_callback:
@@ -1298,10 +1431,11 @@ class SniperBot:
                                 logger.info(f"🎯 {settings.sell_after_buys}-buyer sell condition met for {mint}, executing sell...")
                                 await self._execute_sell(mint, f"{settings.sell_after_buys}-buyer rule")
                         elif settings.sell_strategy == "time_based":
-                            hours_since_entry = (int(time.time()) - position.entry_time) / 3600
-                            if hours_since_entry >= settings.sell_after_hours:
-                                logger.info(f"⏰ {settings.sell_after_hours}-hour time-based sell condition met for {mint}, executing sell...")
-                                await self._execute_sell(mint, f"{settings.sell_after_hours}-hour rule")
+                            seconds_since_entry = int(time.time()) - position.entry_time
+                            target_seconds = getattr(settings, 'sell_after_seconds', 18000)
+                            if seconds_since_entry >= target_seconds:
+                                logger.info(f"⏰ {target_seconds}-second time-based sell condition met for {mint}, executing sell...")
+                                await self._execute_sell(mint, f"{target_seconds}-second rule")
             
             # Update UI if callback exists
             if self.ui_callback:
@@ -1372,6 +1506,31 @@ class SniperBot:
             if "401" in str(e) or "Unauthorized" in str(e):
                 logger.error("💡 Check your HELIUS_API_KEY in the .env file")
             return config_manager.config.bot_state.sol_balance  # Return cached balance 
+
+    async def get_wallet_balance(self) -> float:
+        """Async helper to fetch current SOL balance via RPC and update state."""
+        try:
+            if not self.keypair:
+                return 0.0
+            # Use async path only if there's a running loop; otherwise fall back to sync
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return self.get_wallet_balance_sync()
+
+            balance_response = await self.solana_client.get_balance(self.keypair.pubkey())
+            if getattr(balance_response, 'value', None) is not None:
+                balance_sol = balance_response.value / 10**9
+                config_manager.update_bot_state(sol_balance=balance_sol)
+                return balance_sol
+            return config_manager.config.bot_state.sol_balance
+        except Exception as e:
+            logger.error(f"❌ Error fetching wallet balance: {e}")
+            # Fallback to sync fetch if async path fails due to loop issues
+            try:
+                return self.get_wallet_balance_sync()
+            except Exception:
+                return config_manager.config.bot_state.sol_balance
 
     async def fetch_wallet_positions(self) -> List[Dict[str, Any]]:
         """Fetch current wallet positions using HeliusAPI method"""

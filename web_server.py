@@ -252,7 +252,7 @@ def update_settings():
             'auto_sell': bool,
             'sell_strategy': str,
             'sell_after_buys': int,
-            'sell_after_hours': float,
+            'sell_after_seconds': int,
             'token_age_filter': str,
             'custom_days': int,
             'include_pump_tokens': bool,
@@ -264,6 +264,13 @@ def update_settings():
         for key, value in data.items():
             if key in valid_settings:
                 settings[key] = valid_settings[key](value)
+
+        # Back-compat: convert legacy hours to seconds if provided
+        if 'sell_after_hours' in data and 'sell_after_seconds' not in settings:
+            try:
+                settings['sell_after_seconds'] = int(float(data['sell_after_hours']) * 3600)
+            except Exception:
+                pass
         
         success = bot.update_settings(settings)
         
@@ -434,30 +441,24 @@ def manual_sell():
 
 @app.route('/api/positions', methods=['GET'])
 def get_positions():
-    """Get wallet positions"""
+    """Get current in-memory positions (no wallet scan)"""
     try:
-        # Execute in async context
-        async def fetch_positions():
-            return await bot.fetch_wallet_positions()
-        
-        # Run in the bot's event loop if it exists
-        if loop and not loop.is_closed():
-            future = asyncio.run_coroutine_threadsafe(fetch_positions(), loop)
-            positions = future.result(timeout=30)
-        else:
-            positions = asyncio.run(fetch_positions())
-        
-        return jsonify({
-            'success': True,
-            'positions': positions
-        })
-        
+        positions = bot.get_positions_snapshot()
+        return jsonify({'success': True, 'positions': positions})
     except Exception as e:
         logger.error(f"Error fetching positions: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/wallet/sol_balance', methods=['GET'])
+def get_sol_balance():
+    """Fetch current SOL balance directly from RPC"""
+    try:
+        # Prefer sync method to avoid event loop issues when server thread changes
+        balance = bot.get_wallet_balance_sync()
+        return jsonify({'success': True, 'sol_balance': balance})
+    except Exception as e:
+        logger.error(f"Error fetching SOL balance: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/transactions', methods=['GET'])
 def get_transactions():
@@ -487,6 +488,16 @@ def get_transactions():
             'success': False,
             'error': str(e)
         }), 500
+
+@app.route('/api/positions/<mint>', methods=['DELETE'])
+def delete_position(mint):
+    """Delete a position from backend (in-memory) without on-chain action"""
+    try:
+        success = bot.delete_position(mint)
+        return jsonify({'success': success})
+    except Exception as e:
+        logger.error(f"Error deleting position: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # WebSocket Events
 @socketio.on('connect')
