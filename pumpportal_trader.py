@@ -366,6 +366,8 @@ class PumpPortalTrader:
                         tx,
                         opts=opts
                     )
+
+                    logger.info(f"✅ Transaction VALUE: {signature.value}")
                     
                     if signature.value:
                         logger.info(f"✅ Transaction sent: {signature.value}")

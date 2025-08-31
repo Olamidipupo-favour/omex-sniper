@@ -77,6 +77,10 @@ class SniperBot:
         self._autobuy_state_lock: asyncio.Lock = asyncio.Lock()
         self._buys_in_progress: set[str] = set()
         self._autobuy_queue: List[TokenInfo] = []
+        # New: track concurrent sells and a queue when at capacity
+        self._sell_state_lock: asyncio.Lock = asyncio.Lock()
+        self._sells_in_progress: set[str] = set()
+        self._sell_queue: List[str] = []
 
     async def _start_autobuy_task(self, token: TokenInfo):
         """Run a single auto-buy and ensure slot release + queue draining."""
@@ -948,7 +952,7 @@ class SniperBot:
             logger.error(f"❌ Error stopping price monitoring for {mint}: {e}")
     
     async def sell_token(self, mint: str) -> bool:
-        """Sell a token position"""
+        """Sell a token position with queue management for same mint operations"""
         try:
             logger.info(f"💸 sell_token called for {mint}")
             if not self.keypair:
@@ -959,96 +963,21 @@ class SniperBot:
                 logger.warning(f"⚠️ No active position found for {mint}")
                 return False
             
-            position = self.positions[mint]
-            logger.info(f"💸 Selling position for {position.token_symbol or mint}")
-            logger.info(f"💸 Token amount: {position.token_amount}")
-
-            # Safety: Ensure we have a non-zero token amount before attempting to sell
-            if position.token_amount <= 0:
-                try:
-                    logger.warning(f"⚠️ token_amount is 0 for {mint}. Attempting to refresh from wallet balances before selling...")
-                    wallet_address = str(self.keypair.pubkey())
-                    balances = await self.helius_api.get_wallet_token_balances(wallet_address)
-                    refreshed_amount = 0.0
-                    for item in balances:
-                        # Items are DAS assets; use helper to parse
-                        parsed = self.helius_api.parse_token_balance_for_position(item)
-                        if not parsed:
-                            continue
-                        if parsed.get('mint') == mint:
-                            refreshed_amount = parsed.get('token_amount', 0.0)
-                            break
-                    if refreshed_amount > 0:
-                        position.token_amount = refreshed_amount
-                        logger.info(f"✅ Refreshed token_amount for {mint}: {refreshed_amount:,.0f}")
-                    else:
-                        logger.error(f"❌ Unable to determine token amount for {mint}. Aborting sell to prevent 0-amount transaction.")
-                        return False
-                except Exception as e:
-                    logger.error(f"❌ Error refreshing token amount before sell for {mint}: {e}")
-                    return False
-            
-            # Get transaction type from settings
-            settings = config_manager.config.bot_settings
-            priority_fee = settings.priority_fee
-            
-            logger.info(f"💰 Priority fee: {priority_fee} SOL")
-            
-            # Use trader to execute sell with transaction type from settings
-            success, signature, sol_received = await self.trader.sell_token(
-                mint, 
-                position.token_amount, 
-                transaction_type=settings.transaction_type,
-                priority_fee=priority_fee
-            )
-            
-            if success:
-                logger.info(f"✅ Sell successful for {position.token_symbol or mint}")
+            async with self._sell_state_lock:
+                # Check if there's already a sell in progress for this mint
+                if mint in self._sells_in_progress:
+                    logger.info(f"🔄 Sell already in progress for {mint}, adding to queue")
+                    self._sell_queue.append(mint)
+                    return True
                 
-                # Calculate P&L based on SOL received vs SOL invested
-                if sol_received > 0:
-                    pnl_sol = sol_received - position.sol_amount
-                    pnl_percent = (pnl_sol / position.sol_amount) * 100
-                    
-                    position.current_pnl = pnl_sol
-                    position.current_pnl_percent = pnl_percent
-                    
-                    logger.info(f"💰 P&L: {pnl_percent:.2f}% ({pnl_sol:.4f} SOL)")
-                
-                # Close position
-                position.is_active = False
-                
-                # Update total P&L
-                total_pnl = config_manager.config.bot_state.total_pnl + position.current_pnl
-                config_manager.update_bot_state(total_pnl=total_pnl)
-                
-                # Update balance
-                await self._update_wallet_balance()
-                
-                # Emit position update to UI
-                if self.ui_callback:
-                    self.ui_callback('position_update', {
-                        'mint': mint,
-                        'action': 'sell',
-                        'pnl': position.current_pnl,
-                        'pnl_percent': position.current_pnl_percent,
-                        'buy_count': position.buy_count_since_entry,
-                        'timestamp': int(datetime.now().timestamp())
-                    })
-
-                # Stop listening to this token's trades after it becomes inactive
-                try:
-                    self.monitor.remove_token_trade_subscription_sync(mint)
-                except Exception as _:
-                    pass
-                
+                # No sells in progress for this mint, start this one
+                self._sells_in_progress.add(mint)
+                asyncio.create_task(self._start_sell_task(mint))
+                logger.info(f"🚀 Starting sell task for {mint}")
                 return True
-            else:
-                logger.error(f"❌ Sell failed for {position.token_symbol or mint}")
-                return False
                 
         except Exception as e:
-            logger.error(f"❌ Error selling token: {e}")
+            logger.error(f"❌ Error in sell_token queue management: {e}")
             return False
     
     async def _monitor_positions(self):
@@ -1462,16 +1391,44 @@ class SniperBot:
                         if not position.entry_time:
                             position.entry_time = position.entry_timestamp or int(time.time())
                         
-                        if settings.sell_strategy == "buy_count":
-                            if position.buy_count_since_entry >= settings.sell_after_buys:
-                                logger.info(f"🎯 {settings.sell_after_buys}-buyer sell condition met for {mint}, executing sell...")
-                                await self._execute_sell(mint, f"{settings.sell_after_buys}-buyer rule")
-                        elif settings.sell_strategy == "time_based":
-                            seconds_since_entry = int(time.time()) - position.entry_time
-                            target_seconds = getattr(settings, 'sell_after_seconds', 18000)
-                            if seconds_since_entry >= target_seconds:
-                                logger.info(f"⏰ {target_seconds}-second time-based sell condition met for {mint}, executing sell...")
-                                await self._execute_sell(mint, f"{target_seconds}-second rule")
+                        # Check profit/loss targets first (highest priority)
+                        should_sell = False
+                        sell_reason = ""
+                        
+                        if position.current_price > 0 and position.entry_price > 0:
+                            pnl_percent = ((position.current_price - position.entry_price) / position.entry_price) * 100
+                            position.current_pnl_percent = pnl_percent
+                            
+                            # Check profit target
+                            if pnl_percent >= settings.profit_target_percent:
+                                should_sell = True
+                                sell_reason = f"Profit target ({pnl_percent:.1f}%)"
+                                logger.info(f"🎯 Profit target reached for {position.token_symbol or mint}: {pnl_percent:.1f}% >= {settings.profit_target_percent}%")
+                            
+                            # Check stop loss
+                            elif pnl_percent <= -settings.stop_loss_percent:
+                                should_sell = True
+                                sell_reason = f"Stop loss ({pnl_percent:.1f}%)"
+                                logger.info(f"🛑 Stop loss triggered for {position.token_symbol or mint}: {pnl_percent:.1f}% <= -{settings.stop_loss_percent}%")
+                        
+                        # Check other sell strategies only if profit/loss targets not met
+                        if not should_sell:
+                            if settings.sell_strategy == "buy_count":
+                                if position.buy_count_since_entry >= settings.sell_after_buys:
+                                    should_sell = True
+                                    sell_reason = f"{settings.sell_after_buys}-buyer rule"
+                                    logger.info(f"🎯 {settings.sell_after_buys}-buyer sell condition met for {mint}, executing sell...")
+                            elif settings.sell_strategy == "time_based":
+                                seconds_since_entry = int(time.time()) - position.entry_time
+                                target_seconds = getattr(settings, 'sell_after_seconds', 18000)
+                                if seconds_since_entry >= target_seconds:
+                                    should_sell = True
+                                    sell_reason = f"{target_seconds}-second rule"
+                                    logger.info(f"⏰ {target_seconds}-second time-based sell condition met for {mint}, executing sell...")
+                        
+                        # Execute sell if any condition is met
+                        if should_sell:
+                            await self._execute_sell(mint, sell_reason)
             
             # Update UI if callback exists
             if self.ui_callback:
@@ -1810,3 +1767,146 @@ class SniperBot:
         except Exception as e:
             logger.error(f"❌ Error executing sell: {e}")
             return False 
+
+    async def _start_sell_task(self, mint: str):
+        """Run a single sell operation and ensure slot release + queue draining."""
+        try:
+            success = await self._execute_sell_token(mint)
+        except Exception as e:
+            logger.error(f"❌ Sell task failed for {mint}: {e}")
+            success = False
+        finally:
+            async with self._sell_state_lock:
+                self._sells_in_progress.discard(mint)
+                
+                # Process queue based on sell result
+                if self._sell_queue:
+                    # Find all queued sells for this mint
+                    same_mint_sells = [m for m in self._sell_queue if m == mint]
+                    
+                    if success:
+                        # If sell was successful, remove all queued sells for this mint (position closed)
+                        self._sell_queue = [m for m in self._sell_queue if m != mint]
+                        if same_mint_sells:
+                            logger.info(f"✅ Removed {len(same_mint_sells)} queued sells for {mint} (position closed)")
+                    else:
+                        # If sell failed, process the next queued sell for this mint
+                        if same_mint_sells:
+                            next_mint = same_mint_sells[0]
+                            self._sell_queue.remove(next_mint)
+                            self._sells_in_progress.add(next_mint)
+                            asyncio.create_task(self._start_sell_task(next_mint))
+                            logger.info(f"🔄 Processing next queued sell for {next_mint} (previous failed)")
+                
+                # Process any other mints in queue (different mints can run concurrently)
+                remaining_queue = [m for m in self._sell_queue if m not in self._sells_in_progress]
+                for next_mint in remaining_queue:
+                    if next_mint not in self._sells_in_progress:
+                        self._sell_queue.remove(next_mint)
+                        self._sells_in_progress.add(next_mint)
+                        asyncio.create_task(self._start_sell_task(next_mint))
+                        logger.info(f"🚀 Starting concurrent sell task for {next_mint}")
+
+    async def _execute_sell_token(self, mint: str) -> bool:
+        """Execute the actual sell operation (moved from sell_token)"""
+        try:
+            logger.info(f"💸 _execute_sell_token called for {mint}")
+            if not self.keypair:
+                logger.error("❌ No wallet connected")
+                return False
+            
+            if mint not in self.positions or not self.positions[mint].is_active:
+                logger.warning(f"⚠️ No active position found for {mint}")
+                return False
+            
+            position = self.positions[mint]
+            logger.info(f"💸 Selling position for {position.token_symbol or mint}")
+            logger.info(f"💸 Token amount: {position.token_amount}")
+
+            # Safety: Ensure we have a non-zero token amount before attempting to sell
+            if position.token_amount <= 0:
+                try:
+                    logger.warning(f"⚠️ token_amount is 0 for {mint}. Attempting to refresh from wallet balances before selling...")
+                    wallet_address = str(self.keypair.pubkey())
+                    balances = await self.helius_api.get_wallet_token_balances(wallet_address)
+                    refreshed_amount = 0.0
+                    for item in balances:
+                        # Items are DAS assets; use helper to parse
+                        parsed = self.helius_api.parse_token_balance_for_position(item)
+                        if not parsed:
+                            continue
+                        if parsed.get('mint') == mint:
+                            refreshed_amount = parsed.get('token_amount', 0.0)
+                            break
+                    if refreshed_amount > 0:
+                        position.token_amount = refreshed_amount
+                        logger.info(f"✅ Refreshed token_amount for {mint}: {refreshed_amount:,.0f}")
+                    else:
+                        logger.error(f"❌ Unable to determine token amount for {mint}. Aborting sell to prevent 0-amount transaction.")
+                        return False
+                except Exception as e:
+                    logger.error(f"❌ Error refreshing token amount before sell for {mint}: {e}")
+                    return False
+            
+            # Get transaction type from settings
+            settings = config_manager.config.bot_settings
+            priority_fee = settings.priority_fee
+            
+            logger.info(f"💰 Priority fee: {priority_fee} SOL")
+            
+            # Use trader to execute sell with transaction type from settings
+            success, signature, sol_received = await self.trader.sell_token(
+                mint, 
+                position.token_amount, 
+                transaction_type=settings.transaction_type,
+                priority_fee=priority_fee
+            )
+            
+            if success:
+                logger.info(f"✅ Sell successful for {position.token_symbol or mint}")
+                
+                # Calculate P&L based on SOL received vs SOL invested
+                if sol_received > 0:
+                    pnl_sol = sol_received - position.sol_amount
+                    pnl_percent = (pnl_sol / position.sol_amount) * 100
+                    
+                    position.current_pnl = pnl_sol
+                    position.current_pnl_percent = pnl_percent
+                    
+                    logger.info(f"💰 P&L: {pnl_percent:.2f}% ({pnl_sol:.4f} SOL)")
+                
+                # Close position
+                position.is_active = False
+                
+                # Update total P&L
+                total_pnl = config_manager.config.bot_state.total_pnl + position.current_pnl
+                config_manager.update_bot_state(total_pnl=total_pnl)
+                
+                # Update balance
+                await self._update_wallet_balance()
+                
+                # Emit position update to UI
+                if self.ui_callback:
+                    self.ui_callback('position_update', {
+                        'mint': mint,
+                        'action': 'sell',
+                        'pnl': position.current_pnl,
+                        'pnl_percent': position.current_pnl_percent,
+                        'buy_count': position.buy_count_since_entry,
+                        'timestamp': int(datetime.now().timestamp())
+                    })
+
+                # Stop listening to this token's trades after it becomes inactive
+                try:
+                    self.monitor.remove_token_trade_subscription_sync(mint)
+                except Exception as _:
+                    pass
+                
+                return True
+            else:
+                logger.error(f"❌ Sell failed for {position.token_symbol or mint}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error selling token: {e}")
+            return False
