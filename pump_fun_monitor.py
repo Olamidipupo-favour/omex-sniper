@@ -454,6 +454,7 @@ class PumpPortalMonitor:
     async def unsubscribe_token_trades(self, token_mints: list):
         """Unsubscribe from trades for specific tokens"""
         if not self.websocket or not token_mints:
+            logger.warning(f"❌ Cannot unsubscribe - WebSocket not connected or no tokens provided")
             return False
             
         try:
@@ -1305,6 +1306,7 @@ class PumpPortalMonitor:
         """Unsubscribe from a single token's trade stream synchronously."""
         try:
             if not mint:
+                logger.warning(f"❌ Cannot unsubscribe - no mint provided")
                 return False
             if self.ws_app and self.ws_app.sock:
                 payload = {

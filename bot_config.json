@@ -14,7 +14,7 @@
     "sell_strategy": "buy_count",
     "sell_after_buys": 3,
     "sell_after_seconds": 18000,
-    "token_age_filter": "new_only",
+    "token_age_filter": "last_3_days",
     "custom_days": 7,
     "include_pump_tokens": true,
     "transaction_type": "local",
@@ -25,7 +25,7 @@
     "is_running": false,
     "wallet_connected": true,
     "wallet_address": "952LPLt7zzU4RGUmBoPV7zQwsCire85P12Ht6Tp8Dno9",
-    "sol_balance": 0.013088993,
+    "sol_balance": 0.012665701,
     "total_pnl": 0.0,
     "active_positions": 0
   }

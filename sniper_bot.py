@@ -623,6 +623,11 @@ class SniperBot:
     async def _handle_new_token(self, token: TokenInfo):
         """Handle new token detection"""
         try:
+            # Check if monitoring is currently running
+            if not config_manager.config.bot_state.is_running:
+                logger.info(f"⏭️ Skipping token {token.symbol} - monitoring is stopped")
+                return
+            
             settings = config_manager.config.bot_settings
             
             # Update holders count and apply filtering using Pump.fun API
@@ -1734,7 +1739,7 @@ class SniperBot:
                 await self._stop_price_monitoring_for_token(mint)
                 
                 # Unsubscribe from monitoring
-                await self.monitor.unsubscribe_token_trades([mint])
+                self.monitor.remove_token_trade_subscription_sync(mint)
                 
                 # Record transaction
                 await self._record_transaction('sell', mint, sol_received, signature, position.token_amount)
