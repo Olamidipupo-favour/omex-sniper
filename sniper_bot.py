@@ -82,25 +82,6 @@ class SniperBot:
         self._sells_in_progress: set[str] = set()
         self._sell_queue: List[str] = []
 
-    async def _start_autobuy_task(self, token: TokenInfo):
-        """Run a single auto-buy and ensure slot release + queue draining."""
-        settings = config_manager.config.bot_settings
-        try:
-            await self.buy_token(token.mint, settings.sol_per_snipe, token.symbol, token.name)
-        except Exception as e:
-            logger.error(f"❌ Auto-buy task failed for {getattr(token, 'symbol', token.mint)}: {e}")
-        finally:
-            async with self._autobuy_state_lock:
-                self._buys_in_progress.discard(token.mint)
-                # Drain queue if capacity available
-                active_positions = len([p for p in self.positions.values() if p.is_active])
-                concurrent_buys = len(self._buys_in_progress)
-                capacity = max(0, settings.max_positions - active_positions - concurrent_buys)
-                if capacity > 0 and self._autobuy_queue:
-                    next_token = self._autobuy_queue.pop(0)
-                    self._buys_in_progress.add(next_token.mint)
-                    asyncio.create_task(self._start_autobuy_task(next_token))
-        
         # Add cancellation flag for historical token loading
         self._historical_loading_cancelled = False
         self._historical_loading_task = None
@@ -121,6 +102,25 @@ class SniperBot:
         
         # Set up price update callback
         self.monitor.set_price_update_callback(self._handle_price_update)
+
+    async def _start_autobuy_task(self, token: TokenInfo):
+        """Run a single auto-buy and ensure slot release + queue draining."""
+        settings = config_manager.config.bot_settings
+        try:
+            await self.buy_token(token.mint, settings.sol_per_snipe, token.symbol, token.name)
+        except Exception as e:
+            logger.error(f"❌ Auto-buy task failed for {getattr(token, 'symbol', token.mint)}: {e}")
+        finally:
+            async with self._autobuy_state_lock:
+                self._buys_in_progress.discard(token.mint)
+                # Drain queue if capacity available
+                active_positions = len([p for p in self.positions.values() if p.is_active])
+                concurrent_buys = len(self._buys_in_progress)
+                capacity = max(0, settings.max_positions - active_positions - concurrent_buys)
+                if capacity > 0 and self._autobuy_queue:
+                    next_token = self._autobuy_queue.pop(0)
+                    self._buys_in_progress.add(next_token.mint)
+                    asyncio.create_task(self._start_autobuy_task(next_token))
     
     def _check_wallet_on_startup(self):
         """Check if wallet is configured and connect automatically"""
