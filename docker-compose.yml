@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  pumpfun-sniper-bot:
+    build: .
+    container_name: pumpfun-sniper-bot
+    restart: unless-stopped
+    environment:
+      # Required environment variables
+      - HELIUS_API_KEY=${HELIUS_API_KEY}
+      - PUMPPORTAL_API_KEY=${PUMPPORTAL_API_KEY}
+      
+      # Optional environment variables
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+      
+    volumes:
+      # Mount config file for persistence
+      - ./bot_config.json:/app/bot_config.json
+      
+      # Mount logs directory
+      - ./logs:/app/logs
+      
+      # Mount data directory for any persistent data
+      - ./data:/app/data
+      
+    ports:
+      # Web interface port (Flask-SocketIO server)
+      - "8001:8001"
+      
+    networks:
+      - pumpfun-network
+      
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+          
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  pumpfun-network:
+    driver: bridge
+
+volumes:
+  pumpfun-data:

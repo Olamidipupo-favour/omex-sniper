@@ -23,9 +23,9 @@
   },
   "bot_state": {
     "is_running": false,
-    "wallet_connected": true,
-    "wallet_address": "952LPLt7zzU4RGUmBoPV7zQwsCire85P12Ht6Tp8Dno9",
-    "sol_balance": 0.012665701,
+    "wallet_connected": false,
+    "wallet_address": "",
+    "sol_balance": 0.01030123,
     "total_pnl": 0.0,
     "active_positions": 0
   }
