@@ -3,6 +3,7 @@
 services:
   karambula-sniper-bot:
     image: tesals/karambula:latest
+    platform: linux/arm64
     container_name: karambula-sniper-bot
     restart: unless-stopped
     environment:
