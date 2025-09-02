@@ -53,8 +53,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Push to DockerHub with latest tag
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        run: |
-          docker tag tesals/karambula:${{ github.sha }} tesals/karambula:latest
-          docker push tesals/karambula:latest
+      # - name: Push to DockerHub with latest tag
+      #   if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      #   run: |
+      #     docker tag tesals/karambula:${{ github.sha }} tesals/karambula:latest
+      #     docker push tesals/karambula:latest
