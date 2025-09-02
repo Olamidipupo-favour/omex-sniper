@@ -110,6 +110,11 @@ class WebSocketHandler:
     def emit_trade_update(data: Dict[str, Any]):
         """Emit trade update event"""
         socketio.emit('trade_update', data)
+    
+    @staticmethod
+    def emit_loading_status(data: Dict[str, Any]):
+        """Emit loading status event to frontend (quick mode)"""
+        socketio.emit('loading_status', data)
 
 async def handle_bot_event(event_type: str, data: Dict[str, Any]):
     """Handle bot events for WebSocket emission"""
@@ -125,6 +130,8 @@ async def handle_bot_event(event_type: str, data: Dict[str, Any]):
         WebSocketHandler.emit_price_update(data)
     elif event_type == 'trade_update':
         WebSocketHandler.emit_trade_update(data)
+    elif event_type == 'loading_status':
+        WebSocketHandler.emit_loading_status(data)
     elif event_type == 'error':
         WebSocketHandler.emit_error(data)
     elif event_type == 'auto_buy_success':
@@ -150,6 +157,7 @@ def handle_bot_event_sync(event_type: str, data: Dict[str, Any]):
         logger.error(f"❌ Error handling bot event {event_type}: {e}")
 
 bot.set_ui_callback(handle_bot_event_sync)
+bot.set_loading_status_callback(handle_bot_event_sync)
 
 # Routes
 @app.route('/')
@@ -257,7 +265,11 @@ def update_settings():
             'custom_days': int,
             'include_pump_tokens': bool,
             'transaction_type': str,
-            'priority_fee': float
+            'priority_fee': float,
+            'historical_batch_size': int,
+            'quick_mode': bool,
+            'quick_mode_batch_size': int,
+            'max_tokens_in_table': int
         }
         
         settings = {}

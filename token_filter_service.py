@@ -13,6 +13,10 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from solders.pubkey import Pubkey
 from solana.rpc.async_api import AsyncClient
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -986,7 +990,7 @@ class TokenFilterService:
                         logger.info(f"📋 Fallback tokens JSON: {helius_tokens}")
             
             # Combine and deduplicate (Pump.fun tokens take priority)
-            all_tokens = pump_tokens + pump_helius_tokens + helius_tokens + trending_tokens
+            all_tokens = pump_tokens + helius_tokens + trending_tokens
             unique_tokens = {}
             
             for token in all_tokens:
@@ -1130,7 +1134,7 @@ class TokenFilterService:
             
             url = f"https://data.solanatracker.io/tokens/{mint_address}/holders"
             headers = {
-                "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
+                "x-api-key": os.getenv('SOLANA_TRACKER_API')
             }
             
             async with aiohttp.ClientSession() as session:
@@ -1229,7 +1233,7 @@ class TokenFilterService:
     #     try:
     #         url = f"https://data.solanatracker.io/tokens/{mint}/holders?token={mint}"
     #         headers = {
-    #             "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
+    #             "x-api-key": os.getenv('SOLANA_TRACKER_API')
     #         }
             
     #         logger.info(f"🔍 Fetching holders for {mint} from SolanaTracker")

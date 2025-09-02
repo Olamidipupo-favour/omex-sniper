@@ -1,8 +1,8 @@
-# 🎯 Pump.Fun Sniper Bot
+# 🎯 KARAMBULA Sniper Bot
 
 A beautiful, modern web-based sniper bot for Pump.Fun token launches with real-time monitoring, auto-trading capabilities, and a professional dark-themed UI.
 
-![Pump.Fun Sniper Bot](https://img.shields.io/badge/Pump.Fun-Sniper%20Bot-blue?style=for-the-badge&logo=solana)
+![KARAMBULA Sniper Bot](https://img.shields.io/badge/KARAMBULA-Sniper%20Bot-blue?style=for-the-badge&logo=solana)
 ![Python](https://img.shields.io/badge/Python-3.9+-green?style=for-the-badge&logo=python)
 ![Flask](https://img.shields.io/badge/Flask-WebSocket-red?style=for-the-badge&logo=flask)
 ![Solana](https://img.shields.io/badge/Solana-Blockchain-purple?style=for-the-badge&logo=solana)
@@ -67,8 +67,27 @@ A beautiful, modern web-based sniper bot for Pump.Fun token launches with real-t
 
 5. **Open your browser**
    ```
-   http://localhost:8080
+   http://localhost:8001
    ```
+
+## 🐳 Docker Deployment (Recommended)
+
+### Option 1: Automated GitHub Actions (Recommended)
+The bot automatically builds and pushes to DockerHub on every GitHub push!
+
+1. **Set up GitHub Secrets** (see [GITHUB_ACTIONS_SETUP.md](GITHUB_ACTIONS_SETUP.md))
+2. **Push your code** to GitHub
+3. **Pull and run** the latest image:
+   ```bash
+   docker pull tesals/karambula:latest
+   docker-compose up -d
+   ```
+
+### Option 2: Manual Docker Build
+```bash
+docker build -t karambula-bot .
+docker run -d -p 8001:8001 karambula-bot
+```
 
 ## 📖 Usage Guide
 

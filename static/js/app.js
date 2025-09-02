@@ -202,6 +202,16 @@ class SniperBotApp {
                 customDaysContainer.style.display = 'none';
             }
         });
+        
+        // Quick mode toggle handler
+        document.getElementById('quickMode').addEventListener('change', (e) => {
+            const quickModeBatchSizeContainer = document.getElementById('quickModeBatchSizeContainer');
+            if (e.target.checked) {
+                quickModeBatchSizeContainer.style.display = 'block';
+            } else {
+                quickModeBatchSizeContainer.style.display = 'none';
+            }
+        });
 
         // Sell strategy dropdown
         document.getElementById('sellStrategy').addEventListener('change', (e) => {
@@ -293,6 +303,10 @@ class SniperBotApp {
             
             this.socket.on('error', (data) => {
                 this.handleError(data);
+            });
+            
+            this.socket.on('loading_status', (data) => {
+                this.handleLoadingStatus(data);
             });
             
         } catch (error) {
@@ -510,7 +524,11 @@ class SniperBotApp {
                 custom_days: parseInt(document.getElementById('customDays').value),
                 include_pump_tokens: document.getElementById('includePumpTokens').checked,
                 transaction_type: document.getElementById('transactionType').value,
-                priority_fee: parseFloat(document.getElementById('priorityFee').value)
+                priority_fee: parseFloat(document.getElementById('priorityFee').value),
+                historical_batch_size: parseInt(document.getElementById('historicalBatchSize').value),
+                quick_mode: document.getElementById('quickMode').checked,
+                quick_mode_batch_size: parseInt(document.getElementById('quickModeBatchSize').value),
+                max_tokens_in_table: parseInt(document.getElementById('maxTokensInTable').value)
             };
             
             const response = await fetch('/api/settings/update', {
@@ -644,9 +662,13 @@ class SniperBotApp {
         console.log('price value:', token.price, 'type:', typeof token.price);
         console.log('===========================');
         
+        // Add new token to the beginning of the list
         this.newTokens.unshift(token);
-        if (this.newTokens.length > 50) {
-            this.newTokens = this.newTokens.slice(0, 50);
+        
+        // Use configurable limit from settings, default to 1000 if not set
+        const maxTokens = parseInt(document.getElementById('maxTokensInTable')?.value) || 1000;
+        if (this.newTokens.length > maxTokens) {
+            this.newTokens = this.newTokens.slice(0, maxTokens);
         }
         
         this.updateNewTokensTable();
@@ -915,6 +937,72 @@ class SniperBotApp {
     
     handleError(data) {
         this.showNotification(data.message, 'error');
+    }
+    
+    handleLoadingStatus(data) {
+        console.log('📊 Loading status received:', data);
+        
+        const container = document.getElementById('loadingStatusContainer');
+        const message = document.getElementById('loadingMessage');
+        const progress = document.getElementById('loadingProgress');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        
+        if (!container || !message) return;
+        
+        // Show container
+        container.style.display = 'block';
+        
+        // Update message
+        message.textContent = data.message;
+        
+        // Handle different status types
+        switch (data.status) {
+            case 'loading_tokens':
+                progress.style.display = 'none';
+                break;
+                
+            case 'filtering_tokens':
+                progress.style.display = 'none';
+                break;
+                
+            case 'processing_tokens':
+                progress.style.display = 'none';
+                break;
+                
+            case 'processing_progress':
+                progress.style.display = 'flex';
+                if (data.progress !== undefined) {
+                    const percentage = Math.min(100, Math.max(0, data.progress));
+                    progressFill.style.width = `${percentage}%`;
+                    progressText.textContent = `${percentage.toFixed(1)}%`;
+                }
+                break;
+                
+            case 'completed':
+                progress.style.display = 'flex';
+                if (data.progress !== undefined) {
+                    progressFill.style.width = '100%';
+                    progressText.textContent = '100%';
+                }
+                // Hide after 3 seconds
+                setTimeout(() => {
+                    container.style.display = 'none';
+                }, 3000);
+                break;
+                
+            case 'error':
+                progress.style.display = 'none';
+                message.style.color = '#ff4757';
+                // Hide after 5 seconds
+                setTimeout(() => {
+                    container.style.display = 'none';
+                    message.style.color = '';
+                }, 5000);
+                break;
+        }
+        
+        this.addLog(`Loading Status: ${data.message}`, 'info');
     }
     
     handleBuyError(error) {
@@ -1663,6 +1751,22 @@ class SniperBotApp {
             document.getElementById('includePumpTokens').checked = status.settings.include_pump_tokens !== false; // Default to true
             document.getElementById('transactionType').value = status.settings.transaction_type || 'local';
             document.getElementById('priorityFee').value = status.settings.priority_fee || 0.0001;
+            
+            // Load quick mode settings
+            document.getElementById('historicalBatchSize').value = status.settings.historical_batch_size || 10;
+            document.getElementById('quickMode').checked = status.settings.quick_mode || false;
+            document.getElementById('quickModeBatchSize').value = status.settings.quick_mode_batch_size || 100;
+            
+            // Load display settings
+            document.getElementById('maxTokensInTable').value = status.settings.max_tokens_in_table || 1000;
+            
+            // Show/hide quick mode batch size container based on quick mode selection
+            const quickModeBatchSizeContainer = document.getElementById('quickModeBatchSizeContainer');
+            if (status.settings.quick_mode) {
+                quickModeBatchSizeContainer.style.display = 'block';
+            } else {
+                quickModeBatchSizeContainer.style.display = 'none';
+            }
             
             // Show/hide custom days container based on filter selection
             const customDaysContainer = document.getElementById('customDaysContainer');

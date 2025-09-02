@@ -65,6 +65,11 @@ class BotSettings:
     priority_fee: float = 0.0001  # Priority fee in SOL for transactions
     # Historical token processing settings
     historical_batch_size: int = 10  # Number of historical tokens to process in each batch
+    # Quick mode for faster historical data processing
+    quick_mode: bool = False  # When enabled, processes all tokens first, then filters
+    quick_mode_batch_size: int = 100  # Batch size for quick mode (much larger)
+    # Display settings
+    max_tokens_in_table: int = 1000  # Maximum number of tokens to display in the frontend table
 
 @dataclass
 class BotState:

@@ -12,6 +12,10 @@ from typing import Dict, Any, Callable, Optional
 from dataclasses import dataclass
 from config import PUMPPORTAL_WS_URL, PUMPPORTAL_API_URL
 from queue import Queue
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +186,7 @@ class PumpPortalMonitor:
             
             url = f"https://data.solanatracker.io/tokens/{mint}/holders"
             headers = {
-                "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
+                "x-api-key": os.getenv('SOLANA_TRACKER_API')
             }
             
             async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:

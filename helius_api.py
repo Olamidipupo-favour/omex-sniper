@@ -10,6 +10,11 @@ from typing import List, Dict, Any, Optional
 from config import HELIUS_API_KEY
 import json
 import time
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +121,7 @@ class HeliusAPI:
             # SolanaTracker API endpoint for price data
             url = f"https://data.solanatracker.io/price?token={mint_address}"
             headers = {
-                "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
+                "x-api-key": os.getenv('SOLANA_TRACKER_API')
             }
             
             async with aiohttp.ClientSession() as session:
@@ -489,7 +494,7 @@ class HeliusAPI:
             
             url = f"https://data.solanatracker.io/tokens/{mint_address}/holders"
             headers = {
-                "x-api-key": "f4e9aeb4-c5c3-4378-84f6-1ab2bf10c649"
+                "x-api-key": os.getenv('SOLANA_TRACKER_API')
             }
             
             async with aiohttp.ClientSession() as session:

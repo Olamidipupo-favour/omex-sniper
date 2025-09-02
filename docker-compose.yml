@@ -1,14 +1,15 @@
 version: '3.8'
 
 services:
-  pumpfun-sniper-bot:
-    build: .
-    container_name: pumpfun-sniper-bot
+  karambula-sniper-bot:
+    image: tesals/karambula:latest
+    container_name: karambula-sniper-bot
     restart: unless-stopped
     environment:
       # Required environment variables
-      - HELIUS_API_KEY=${HELIUS_API_KEY}
-      - PUMPPORTAL_API_KEY=${PUMPPORTAL_API_KEY}
+      - HELIUS_API_KEY=76b8c433-0f3c-45e6-ba43-979179a978b0
+      - PUMPPORTAL_API_KEY=9wr78p318rnmju326njpmn9gchhppvhbddd52nhr6t65ay3d5x662rj2b4r4up3898wpujv395k5av1h6944wwu7ctpm2e2aa51p2uaab9p30k31d912pkv68n8kemj95wu36xvp84ykuc9x4cea184u4anhp8nup4t2ga085cpjx39e5kn4rtj75678j2dadkprh9hct8kuf8
+      - SOLANA_TRACKER_API=6017fe34-9c9b-49cc-91de-a6c1359223c1
       
       # Optional environment variables
       - PYTHONUNBUFFERED=1
@@ -29,7 +30,7 @@ services:
       - "8001:8001"
       
     networks:
-      - pumpfun-network
+      - karambula-network
       
     # Resource limits
     deploy:
@@ -50,8 +51,8 @@ services:
       start_period: 40s
 
 networks:
-  pumpfun-network:
+  karambula-network:
     driver: bridge
 
 volumes:
-  pumpfun-data:
+  karambula-data:

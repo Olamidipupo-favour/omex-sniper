@@ -102,6 +102,9 @@ class SniperBot:
         
         # Set up price update callback
         self.monitor.set_price_update_callback(self._handle_price_update)
+        
+        # Set up loading status callback for quick mode
+        self.loading_status_callback = None
 
     async def _start_autobuy_task(self, token: TokenInfo):
         """Run a single auto-buy and ensure slot release + queue draining."""
@@ -213,6 +216,10 @@ class SniperBot:
         """Set callback for UI updates"""
         self.ui_callback = callback
     
+    def set_loading_status_callback(self, callback: Callable):
+        """Set callback for loading status updates (quick mode)"""
+        self.loading_status_callback = callback
+    
     def get_bot_status(self) -> dict:
         """Get current bot status"""
         return {
@@ -243,6 +250,9 @@ class SniperBot:
                 'include_pump_tokens': config_manager.config.bot_settings.include_pump_tokens,
                 'transaction_type': config_manager.config.bot_settings.transaction_type,
                 'priority_fee': config_manager.config.bot_settings.priority_fee,
+                'historical_batch_size': config_manager.config.bot_settings.historical_batch_size,
+                'quick_mode': config_manager.config.bot_settings.quick_mode,
+                'quick_mode_batch_size': config_manager.config.bot_settings.quick_mode_batch_size,
             }
         }
     
@@ -332,6 +342,22 @@ class SniperBot:
             
             logger.info(f"📅 Age threshold: {age_threshold_days} days")
             
+            # Check if quick mode is enabled
+            if settings.quick_mode:
+                await self._load_historical_tokens_quick_mode(age_threshold_days)
+            else:
+                await self._load_historical_tokens_normal_mode(age_threshold_days)
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading historical tokens: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    
+    async def _load_historical_tokens_normal_mode(self, age_threshold_days: int):
+        """Load historical tokens using normal mode (original logic)"""
+        try:
+            settings = config_manager.config.bot_settings
+            
             # Get historical tokens using hybrid approach with batch processing
             # Create a batch callback to process tokens immediately as they're fetched
             async def process_token_batch(token_batch: List[Dict[str, Any]]):
@@ -385,9 +411,228 @@ class SniperBot:
             logger.info(f"✅ Historical token loading completed. Total tokens processed: {len(historical_tokens)}")
             
         except Exception as e:
-            logger.error(f"❌ Error loading historical tokens: {e}")
+            logger.error(f"❌ Error loading historical tokens in normal mode: {e}")
             import traceback
             logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    
+    async def _load_historical_tokens_quick_mode(self, age_threshold_days: int):
+        """Load historical tokens using quick mode (get all first, then filter)"""
+        try:
+            settings = config_manager.config.bot_settings
+            
+            # Notify UI that we're loading tokens
+            if self.loading_status_callback:
+                self.loading_status_callback('loading_status', {
+                    'status': 'loading_tokens',
+                    'message': 'Loading historical tokens...',
+                    'timestamp': int(time.time())
+                })
+            
+            logger.info("🚀 Quick mode: Loading all historical tokens first...")
+            
+            # Get all historical tokens without processing (just fetch them)
+            all_tokens = await self.token_filter.get_hybrid_recent_tokens(
+                days=age_threshold_days,
+                include_pump_only=True,
+                batch_callback=None,  # No batch processing in quick mode
+                batch_size=getattr(settings, 'quick_mode_batch_size', 100),
+                cancellation_check=lambda: self._historical_loading_cancelled
+            )
+            
+            if self._historical_loading_cancelled:
+                logger.info("🛑 Historical token loading cancelled in quick mode")
+                return
+            
+            logger.info(f"📊 Quick mode: Loaded {len(all_tokens)} total tokens")
+            
+            # Notify UI that we're done loading, now filtering
+            if self.loading_status_callback:
+                self.loading_status_callback('loading_status', {
+                    'status': 'filtering_tokens',
+                    'message': f'Done loading {len(all_tokens)} tokens. Now filtering...',
+                    'timestamp': int(time.time())
+                })
+            
+            # Apply market cap and basic filters first (without holder checks)
+            filtered_tokens = []
+            for token_data in all_tokens:
+                if self._historical_loading_cancelled:
+                    break
+                
+                # Basic market cap filter
+                market_cap = token_data.get('usd_market_cap', 0)
+                if market_cap < settings.min_market_cap or market_cap > settings.max_market_cap:
+                    continue
+                
+                # Basic liquidity filter (if available)
+                liquidity = token_data.get('liquidity', 0)
+                if liquidity < settings.min_liquidity:
+                    continue
+                
+                filtered_tokens.append(token_data)
+            
+            logger.info(f"🔍 Quick mode: After basic filtering: {len(filtered_tokens)} tokens")
+            
+            # Notify UI that filtering is complete, now processing
+            if self.loading_status_callback:
+                self.loading_status_callback('loading_status', {
+                    'status': 'processing_tokens',
+                    'message': f'Filtered to {len(filtered_tokens)} tokens. Now processing...',
+                    'timestamp': int(time.time())
+                })
+            
+            # Now process the filtered tokens in large batches
+            batch_size = getattr(settings, 'quick_mode_batch_size', 100)
+            total_processed = 0
+            
+            for i in range(0, len(filtered_tokens), batch_size):
+                if self._historical_loading_cancelled:
+                    break
+                
+                batch = filtered_tokens[i:i + batch_size]
+                logger.info(f"📤 Quick mode: Processing batch {i//batch_size + 1} ({len(batch)} tokens)")
+                
+                # Process batch concurrently
+                batch_tasks = []
+                for token_data in batch:
+                    if self._historical_loading_cancelled:
+                        break
+                    
+                    task = self._process_historical_token_quick_mode(token_data)
+                    batch_tasks.append(task)
+                
+                if batch_tasks:
+                    batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+                    batch_processed = sum(1 for result in batch_results if result is True)
+                    total_processed += batch_processed
+                    
+                    logger.info(f"✅ Quick mode: Batch {i//batch_size + 1} processed: {batch_processed}/{len(batch)} tokens")
+                    
+                    # Update UI progress
+                    if self.loading_status_callback:
+                        progress = min(100, (total_processed / len(filtered_tokens)) * 100)
+                        self.loading_status_callback('loading_status', {
+                            'status': 'processing_progress',
+                            'message': f'Processed {total_processed}/{len(filtered_tokens)} tokens ({progress:.1f}%)',
+                            'progress': progress,
+                            'timestamp': int(time.time())
+                        })
+            
+            # Final status update
+            if self.loading_status_callback:
+                self.loading_status_callback('loading_status', {
+                    'status': 'completed',
+                    'message': f'✅ Quick mode completed! Processed {total_processed} tokens',
+                    'total_processed': total_processed,
+                    'timestamp': int(time.time())
+                })
+            
+            logger.info(f"🚀 Quick mode: Historical token loading completed. Total processed: {total_processed}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error loading historical tokens in quick mode: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            
+            # Notify UI of error
+            if self.loading_status_callback:
+                self.loading_status_callback('loading_status', {
+                    'status': 'error',
+                    'message': f'Error in quick mode: {str(e)}',
+                    'timestamp': int(time.time())
+                })
+    
+    async def _process_historical_token_quick_mode(self, token_data: Dict[str, Any]) -> bool:
+        """Process a single historical token in quick mode (with holder check)"""
+        try:
+            # Check if historical loading has been cancelled
+            if self._historical_loading_cancelled:
+                logger.info("🛑 Historical token loading cancelled, skipping token processing")
+                return False
+            
+            # Convert to TokenInfo format
+            token = TokenInfo(
+                mint=token_data.get('mint', ''),
+                symbol=token_data.get('symbol', ''),
+                name=token_data.get('name', ''),
+                description=token_data.get('description', ''),
+                image=token_data.get('image_uri', ''),
+                created_timestamp=token_data.get('created_timestamp', int(time.time())),
+                usd_market_cap=token_data.get('usd_market_cap', 0),
+                market_cap=token_data.get('market_cap', 0),
+                price=token_data.get('price', 0),
+                creator=token_data.get('creator', ''),
+                twitter=token_data.get('twitter', ''),
+                telegram=token_data.get('telegram', ''),
+                website=token_data.get('website', ''),
+                nsfw=token_data.get('nsfw', False),
+                sol_in_pool=token_data.get('sol_in_pool', 0),
+                tokens_in_pool=token_data.get('tokens_in_pool', 0),
+                initial_buy=token_data.get('initial_buy', 0),
+                sol_amount=token_data.get('sol_amount', 0),
+                new_token_balance=token_data.get('new_token_balance', 0),
+                trader_public_key=token_data.get('trader_public_key', ''),
+                tx_type=token_data.get('tx_type', ''),
+                signature=token_data.get('signature', ''),
+                pool=token_data.get('pool', ''),
+                liquidity=token_data.get('liquidity', 0),
+                holders=token_data.get('holders', 0)
+            )
+            
+            # Now check holders (this is the key difference in quick mode)
+            settings = config_manager.config.bot_settings
+            
+            # Update holders count using Pump.fun API
+            passes_filter = await self.monitor.update_token_holders_and_filter(
+                token, 
+                min_liquidity=settings.min_liquidity, 
+                min_holders=settings.min_holders
+            )
+            
+            if not passes_filter:
+                logger.info(f"⏭️ Quick mode: Token {token.symbol} filtered out by liquidity/holders criteria")
+                return False
+            
+            # Enrich token with age information
+            token_dict = {
+                'mint': token.mint,
+                'symbol': token.symbol,
+                'name': token.name,
+                'market_cap': token.market_cap,
+                'price': token.price,
+                'sol_in_pool': token.sol_in_pool,
+                'tokens_in_pool': token.tokens_in_pool,
+                'initial_buy': token.initial_buy,
+                'liquidity': token.liquidity,
+                'holders': token.holders,
+                'created_timestamp': token.created_timestamp
+            }
+            
+            enriched_token = await self.token_filter.enrich_token_with_age_info(
+                token_dict, 
+                include_pump_check=False
+            )
+            
+            # Emit to UI for manual buying
+            if self.ui_callback:
+                logger.info(f"📡 Quick mode: Emitting token to frontend: {token.symbol} ({token.mint})")
+                self.ui_callback('new_token', enriched_token)
+                logger.info(f"📡 Quick mode: Token emitted successfully: {enriched_token}")
+            
+            logger.info(f"📊 Quick mode: Token {token.symbol} processed and displayed for manual buying")
+            
+            # Auto-buy logic for quick mode
+            if settings.auto_buy:
+                logger.info(f"🤖 Quick mode: Auto-buy enabled for {token.symbol}, triggering auto-buy...")
+                await self._auto_buy_token(token)
+            else:
+                logger.info(f"⏭️ Quick mode: Auto-buy disabled for {token.symbol}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error processing historical token in quick mode: {e}")
+            return False
     
     async def _process_historical_token(self, token_data: Dict[str, Any]) -> bool:
         """Process a single historical token (extracted from batch processing)"""
@@ -408,9 +653,20 @@ class SniperBot:
                 usd_market_cap=token_data.get('usd_market_cap', 0),
                 market_cap=token_data.get('market_cap', 0),
                 price=token_data.get('price', 0),
-                sol_in_pool=token_data.get('liquidity', 0),
-                tokens_in_pool=0,
-                initial_buy=0,
+                creator=token_data.get('creator', ''),
+                twitter=token_data.get('twitter', ''),
+                telegram=token_data.get('telegram', ''),
+                website=token_data.get('website', ''),
+                nsfw=token_data.get('nsfw', False),
+                sol_in_pool=token_data.get('sol_in_pool', 0),
+                tokens_in_pool=token_data.get('tokens_in_pool', 0),
+                initial_buy=token_data.get('initial_buy', 0),
+                sol_amount=token_data.get('sol_amount', 0),
+                new_token_balance=token_data.get('new_token_balance', 0),
+                trader_public_key=token_data.get('trader_public_key', ''),
+                tx_type=token_data.get('tx_type', ''),
+                signature=token_data.get('signature', ''),
+                pool=token_data.get('pool', ''),
                 liquidity=token_data.get('liquidity', 0),
                 holders=token_data.get('holders', 0)
             )
