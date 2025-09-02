@@ -1,5 +1,5 @@
 {
-  "private_key": "23qVxyrvL1RjZE7q6TusWxqpc6oNNM4hA2vX9Lja2TBa1aaJE8dTJwAQxh7yfRrn1yDTywMujDJzLp6JkLzD1q1R",
+  "private_key": "",
   "bot_settings": {
     "sol_per_snipe": 1e-05,
     "max_positions": 1,
@@ -26,8 +26,8 @@
   },
   "bot_state": {
     "is_running": false,
-    "wallet_connected": true,
-    "wallet_address": "952LPLt7zzU4RGUmBoPV7zQwsCire85P12Ht6Tp8Dno9",
+    "wallet_connected": false,
+    "wallet_address": "",
     "sol_balance": 0.007519536,
     "total_pnl": 0.0,
     "active_positions": 0
