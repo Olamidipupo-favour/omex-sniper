@@ -109,10 +109,47 @@ class SniperBot:
     async def _start_autobuy_task(self, token: TokenInfo):
         """Run a single auto-buy and ensure slot release + queue draining."""
         settings = config_manager.config.bot_settings
+        success = False
         try:
-            await self.buy_token(token.mint, settings.sol_per_snipe, token.symbol, token.name)
+            success = await self.buy_token(token.mint, settings.sol_per_snipe, token.symbol, token.name)
+            
+            # Send success/failure status to frontend
+            if self.ui_callback:
+                if success:
+                    self.ui_callback('auto_buy_success', {
+                        'token_symbol': token.symbol,
+                        'token_mint': token.mint,
+                        'sol_amount': settings.sol_per_snipe,
+                        'status': 'success',
+                        'message': 'Transaction successful!',
+                        'timestamp': int(datetime.now().timestamp())
+                    })
+                else:
+                    self.ui_callback('auto_buy_error', {
+                        'token_symbol': token.symbol,
+                        'token_mint': token.mint,
+                        'sol_amount': settings.sol_per_snipe,
+                        'status': 'failed',
+                        'error': 'buy_failed',
+                        'message': f'Auto-buy failed for {token.symbol}',
+                        'timestamp': int(datetime.now().timestamp())
+                    })
+                    
         except Exception as e:
-            logger.error(f"❌ Auto-buy task failed for {getattr(token, 'symbol', token.mint)}: {e}")
+            error_msg = f"Auto-buy task failed for {getattr(token, 'symbol', token.mint)}: {e}"
+            logger.error(f"❌ {error_msg}")
+            
+            # Send error status to frontend
+            if self.ui_callback:
+                self.ui_callback('auto_buy_error', {
+                    'token_symbol': token.symbol,
+                    'token_mint': token.mint,
+                    'sol_amount': settings.sol_per_snipe,
+                    'status': 'error',
+                    'error': 'exception',
+                    'message': error_msg,
+                    'timestamp': int(datetime.now().timestamp())
+                })
         finally:
             async with self._autobuy_state_lock:
                 self._buys_in_progress.discard(token.mint)
@@ -1011,32 +1048,20 @@ class SniperBot:
                 self._buys_in_progress.add(token.mint)
 
             logger.info(f"🎯 Auto-buying {token.symbol} with {settings.sol_per_snipe} SOL...")
+            
+            # Notify frontend that transaction is being created
+            if self.ui_callback:
+                self.ui_callback('auto_buy_status', {
+                    'token_symbol': token.symbol,
+                    'token_mint': token.mint,
+                    'sol_amount': settings.sol_per_snipe,
+                    'status': 'creating',
+                    'message': 'Creating transaction...',
+                    'timestamp': int(datetime.now().timestamp())
+                })
+            
             # Run via helper that guarantees slot release and queue drain, even on error
             asyncio.create_task(self._start_autobuy_task(token))
-            success = True
-            if success:
-                logger.info(f"✅ Auto-buy successful for {token.symbol}")
-                
-                # Notify frontend about successful auto-buy
-                if self.ui_callback:
-                    self.ui_callback('auto_buy_success', {
-                        'token_symbol': token.symbol,
-                        'token_mint': token.mint,
-                        'sol_amount': settings.sol_per_snipe,
-                        'timestamp': int(datetime.now().timestamp())
-                    })
-            else:
-                error_msg = f"Auto-buy failed for {token.symbol}"
-                logger.error(f"❌ {error_msg}")
-                
-                # Notify frontend about the error
-                if self.ui_callback:
-                    self.ui_callback('auto_buy_error', {
-                        'token_symbol': token.symbol,
-                        'token_mint': token.mint,
-                        'error': 'buy_failed',
-                        'message': error_msg
-                    })
                 
         except Exception as e:
             error_msg = f"Error during auto-buy for {token.symbol}: {e}"
@@ -1072,7 +1097,7 @@ class SniperBot:
             logger.info(f"💰 Priority fee: {priority_fee} SOL")
             
             # Execute the buy
-            result = await self.trader.buy_token(mint, sol_amount, priority_fee=priority_fee)
+            result = await self.trader.buy_token(mint, sol_amount, transaction_type=settings.transaction_type, priority_fee=priority_fee)
             logger.info(f"🔍 Trader buy_token result: {result} (type: {type(result)})")
             
             if result is None:
@@ -2023,10 +2048,36 @@ class SniperBot:
                 return True
             else:
                 logger.error(f"❌ Sell failed for {position.token_symbol or mint}")
+                
+                # Send sell failure notification to frontend
+                if self.ui_callback:
+                    self.ui_callback('sell_failed', {
+                        'mint': mint,
+                        'token_symbol': position.token_symbol or mint,
+                        'token_amount': position.token_amount,
+                        'reason': reason,
+                        'error_type': 'transaction_failed',
+                        'message': 'Sell transaction failed. Please try selling manually from your wallet.',
+                        'timestamp': int(time.time())
+                    })
+                
                 return False
                 
         except Exception as e:
             logger.error(f"❌ Error executing sell: {e}")
+            
+            # Send sell failure notification to frontend
+            if self.ui_callback:
+                self.ui_callback('sell_failed', {
+                    'mint': mint,
+                    'token_symbol': position.token_symbol if 'position' in locals() else mint,
+                    'token_amount': position.token_amount if 'position' in locals() else 0,
+                    'reason': reason if 'reason' in locals() else 'unknown',
+                    'error_type': 'exception',
+                    'message': f'Sell failed due to error: {str(e)}. Please try selling manually from your wallet.',
+                    'timestamp': int(time.time())
+                })
+            
             return False 
 
     async def _start_sell_task(self, mint: str):
@@ -2166,8 +2217,34 @@ class SniperBot:
                 return True
             else:
                 logger.error(f"❌ Sell failed for {position.token_symbol or mint}")
+                
+                # Send sell failure notification to frontend
+                if self.ui_callback:
+                    self.ui_callback('sell_failed', {
+                        'mint': mint,
+                        'token_symbol': position.token_symbol or mint,
+                        'token_amount': position.token_amount,
+                        'reason': 'auto_sell',
+                        'error_type': 'transaction_failed',
+                        'message': 'Sell transaction failed. Please try selling manually from your wallet.',
+                        'timestamp': int(time.time())
+                    })
+                
                 return False
                 
         except Exception as e:
             logger.error(f"❌ Error selling token: {e}")
+            
+            # Send sell failure notification to frontend
+            if self.ui_callback:
+                self.ui_callback('sell_failed', {
+                    'mint': mint,
+                    'token_symbol': position.token_symbol if 'position' in locals() else mint,
+                    'token_amount': position.token_amount if 'position' in locals() else 0,
+                    'reason': 'auto_sell',
+                    'error_type': 'exception',
+                    'message': f'Sell failed due to error: {str(e)}. Please try selling manually from your wallet.',
+                    'timestamp': int(time.time())
+                })
+            
             return False

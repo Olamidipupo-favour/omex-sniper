@@ -11,6 +11,92 @@
     --danger-color: #ff4757;
 }
 
+/* Sell Failure Notification */
+.sell-failure-notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    width: 400px;
+    background: linear-gradient(135deg, #ff4757, #ff3742);
+    border: 2px solid #ff3742;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(255, 71, 87, 0.3);
+    z-index: 10000;
+    animation: slideInRight 0.3s ease-out;
+    backdrop-filter: blur(20px);
+}
+
+@keyframes slideInRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.notification-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.notification-icon {
+    font-size: 20px;
+    margin-right: 8px;
+}
+
+.notification-title {
+    font-weight: 700;
+    font-size: 16px;
+    color: white;
+}
+
+.notification-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.notification-close:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+.notification-content {
+    padding: 20px;
+}
+
+.notification-content p {
+    margin-bottom: 12px;
+    color: white;
+    line-height: 1.5;
+}
+
+.notification-details {
+    background: rgba(255, 255, 255, 0.1);
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.notification-action {
+    background: rgba(255, 255, 255, 0.15);
+    padding: 12px;
+    border-radius: 8px;
+    border-left: 4px solid #ffd700;
+    font-weight: 600;
+}
+
 /* Reset and Base Styles */
 * {
     margin: 0;

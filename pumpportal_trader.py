@@ -444,6 +444,7 @@ class PumpPortalTrader:
         try:
             logger.info(f"Buying {sol_amount} SOL worth of {mint_address} using {transaction_type} transaction")
             logger.info(f"💰 Priority fee: {priority_fee} SOL")
+            logger.info(f"🔍 Transaction type: {transaction_type}")
             
             if transaction_type == "lightning":
                 # Use lightning transaction
@@ -479,7 +480,7 @@ class PumpPortalTrader:
     async def sell_token(self, mint_address: str, token_amount: float, slippage: float = 5.0, transaction_type: str = "local", priority_fee: float = 0.00001) -> Tuple[bool, Optional[str], float]:
         """Sell tokens for SOL"""
         try:
-            logger.info(f"Selling {token_amount:,.0f} tokens of {mint_address} using {transaction_type} transaction")
+            logger.info(f"Selling {token_amount} tokens of {mint_address} using {transaction_type} transaction")
             logger.info(f"💰 Priority fee: {priority_fee} SOL")
             
             if transaction_type == "lightning":

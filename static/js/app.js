@@ -301,6 +301,14 @@ class SniperBotApp {
                 this.handleAutoBuyError(data);
             });
             
+            this.socket.on('auto_buy_status', (data) => {
+                this.handleAutoBuyStatus(data);
+            });
+            
+            this.socket.on('sell_failed', (data) => {
+                this.handleSellFailed(data);
+            });
+            
             this.socket.on('error', (data) => {
                 this.handleError(data);
             });
@@ -1024,9 +1032,9 @@ class SniperBotApp {
     
     handleAutoBuySuccess(data) {
         console.log('Auto-buy success:', data);
-        const message = `✅ Auto-buy successful: ${data.token_symbol} (${data.sol_amount} SOL)`;
+        const message = `✅ Transaction successful: ${data.token_symbol} (${data.sol_amount} SOL)`;
         this.showToast(message, 'success');
-        this.addLog(`Auto-buy: ${data.token_symbol} - ${data.sol_amount} SOL`, 'success');
+        this.addLog(`Auto-buy success: ${data.token_symbol} - ${data.sol_amount} SOL`, 'success');
     }
     
     handleAutoBuyError(data) {
@@ -1044,6 +1052,68 @@ class SniperBotApp {
         
         this.showToast(errorMessage, 'error');
         this.addLog(`Auto-buy error: ${data.token_symbol} - ${errorMessage}`, 'error');
+    }
+    
+    handleAutoBuyStatus(data) {
+        console.log('Auto-buy status:', data);
+        const message = `🔄 ${data.message} for ${data.token_symbol} (${data.sol_amount} SOL)`;
+        this.showToast(message, 'info');
+        this.addLog(`Auto-buy status: ${data.token_symbol} - ${data.message}`, 'info');
+    }
+    
+    handleSellFailed(data) {
+        console.error('Sell failed:', data);
+        let errorMessage = data.message || 'Sell failed';
+        
+        // Handle specific error types
+        if (data.error_type === 'no_tokens') {
+            errorMessage = `❌ Sell failed: No tokens available for ${data.token_symbol}. Please check your wallet balance.`;
+        } else if (data.error_type === 'transaction_failed') {
+            errorMessage = `❌ Sell failed for ${data.token_symbol}: Transaction failed. Please try selling manually from your wallet.`;
+        } else if (data.error_type === 'balance_check_failed') {
+            errorMessage = `❌ Sell failed for ${data.token_symbol}: Unable to verify token balance. Please check manually.`;
+        } else if (data.error_type === 'exception') {
+            errorMessage = `❌ Sell failed for ${data.token_symbol}: ${data.message}`;
+        }
+        
+        this.showToast(errorMessage, 'error');
+        this.addLog(`Sell failed: ${data.token_symbol} - ${errorMessage}`, 'error');
+        
+        // Show a more prominent notification for sell failures
+        this.showSellFailureNotification(data);
+    }
+    
+    showSellFailureNotification(data) {
+        // Create a more prominent notification for sell failures
+        const notification = document.createElement('div');
+        notification.className = 'sell-failure-notification';
+        notification.innerHTML = `
+            <div class="notification-header">
+                <span class="notification-icon">⚠️</span>
+                <span class="notification-title">Sell Failed</span>
+                <button class="notification-close" onclick="this.parentElement.parentElement.remove()">×</button>
+            </div>
+            <div class="notification-content">
+                <p><strong>${data.token_symbol}</strong> - ${data.message}</p>
+                <p class="notification-details">
+                    Mint: ${data.mint.slice(0, 8)}...<br>
+                    Token Amount: ${data.token_amount ? data.token_amount.toLocaleString() : 'Unknown'}
+                </p>
+                <p class="notification-action">
+                    <strong>Action Required:</strong> Please try selling manually from your wallet.
+                </p>
+            </div>
+        `;
+        
+        // Add to the page
+        document.body.appendChild(notification);
+        
+        // Auto-remove after 30 seconds
+        setTimeout(() => {
+            if (notification.parentElement) {
+                notification.remove();
+            }
+        }, 30000);
     }
     
     handleTransactionUpdate(data) {
