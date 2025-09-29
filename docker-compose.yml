@@ -15,6 +15,7 @@ services:
       
       # Optional environment variables
       - DEBUG=${DEBUG:-false}
+      - ENCRYPTION_KEY=ENCRYPTION_KEY
       - PORT=8000
       - PYTHONUNBUFFERED=1
       - TZ=UTC

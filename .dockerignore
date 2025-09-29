@@ -50,9 +50,10 @@ ehthumbs.db
 Thumbs.db
 
 # Documentation
-*.md
 docs/
 postman/
+# Keep README.md for pyproject.toml
+!README.md
 
 # Testing
 tests/
