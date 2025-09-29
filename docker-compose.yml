@@ -1,11 +1,12 @@
-# Docker Compose file for KARAMBULA Sniper Bot
+version: '3.8'
 
 services:
-  karambula-sniper-bot:
-    image: tesals/karambula:latest
-    platform: linux/arm64
-    container_name: karambula-sniper-bot
-    restart: unless-stopped
+  omex-sniper-api:
+    image: ghcr.io/omex/sniper-microservice/coin-sniper-api:latest
+    platform: linux/amd64
+    container_name: omex-sniper-api
+    ports:
+      - "8000:8000"
     environment:
       # Required environment variables
       - HELIUS_API_KEY=76b8c433-0f3c-45e6-ba43-979179a978b0
@@ -13,47 +14,39 @@ services:
       - SOLANA_TRACKER_API=6017fe34-9c9b-49cc-91de-a6c1359223c1
       
       # Optional environment variables
+      - DEBUG=${DEBUG:-false}
+      - PORT=8000
       - PYTHONUNBUFFERED=1
       - TZ=UTC
       
     volumes:
-      # Mount config file for persistence
-      - ./bot_config.json:/app/bot_config.json
-      
       # Mount logs directory
       - ./logs:/app/logs
-      
-      # Mount data directory for any persistent data
-      - ./data:/app/data
-      
-    ports:
-      # Web interface port (Flask-SocketIO server)
-      - "8001:8001"
-      
-    networks:
-      - karambula-network
-      
-    # Resource limits
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '1.0'
-        reservations:
-          memory: 512M
-          cpus: '0.5'
-          
-    # Health check
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health', timeout=5)"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health/ping"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    networks:
+      - sniper-network
+
+  # Optional: Add a reverse proxy
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - omex-sniper-api
+    restart: unless-stopped
+    networks:
+      - sniper-network
 
 networks:
-  karambula-network:
+  sniper-network:
     driver: bridge
-
-volumes:
-  karambula-data:

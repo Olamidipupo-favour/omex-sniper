@@ -1,17 +1,29 @@
+# Core dependencies
+flask==2.3.3
+flask-cors==4.0.0
+flask-restx==1.1.0
+python-dotenv==1.0.0
+
+# Solana dependencies
 solana==0.30.2
-websockets>=11.0.3
-websocket-client
-aiohttp
-base58
-construct
-borsh-construct
-cryptography
-keyring
-requests
-python-dotenv
-pydantic
-flask
-flask-socketio==5.3.6
 solders==0.18.1
-httpx==0.23.3
+base58==2.1.1
+
+# Async and HTTP
+aiohttp==3.8.6
 asyncio
+websockets==11.0.3
+websocket-client==1.6.4
+
+# Data processing
+pydantic==2.5.0
+requests==2.31.0
+httpx==0.25.2
+
+# Cryptography
+cryptography==41.0.7
+construct==2.10.70
+borsh-construct==0.1.0
+
+# Utilities
+keyring==24.3.0

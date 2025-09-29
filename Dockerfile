@@ -1,51 +1,66 @@
-# Use Python 3.11 slim image for better performance and smaller size
-FROM python:3.11-slim
+# Multi-stage build for production
+FROM python:3.11-slim as builder
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV DEBIAN_FRONTEND=noninteractive
+# Install system dependencies for building
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Copy project files
+COPY pyproject.toml ./
+COPY .python-version ./
+
+# Install dependencies
+RUN uv sync --frozen --no-dev
+
+# Production stage
+FROM python:3.11-slim as production
+
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    libssl-dev \
-    libffi-dev \
-    pkg-config \
     curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Install uv in production image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Set working directory
+WORKDIR /app
+
+# Copy virtual environment from builder
+COPY --from=builder /app/.venv /app/.venv
 
 # Copy application code
-COPY . .
+COPY app.py ./
+COPY services/ ./services/
+COPY models/ ./models/
+COPY core/ ./core/
 
-# Create necessary directories
-RUN mkdir -p /app/logs /app/data
+# Create non-root user
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
 
-# Create a non-root user for security
-RUN useradd --create-home --shell /bin/bash app && \
-    chown -R app:app /app
+# Set environment variables
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app"
+ENV PYTHONUNBUFFERED=1
 
-# Switch to non-root user
-USER app
-
-# Expose ports (if needed for web interface)
-EXPOSE 5000 8001
+# Expose port
+EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8001/health', timeout=5)" || exit 1
+    CMD curl -f http://localhost:8000/api/v1/health/ping || exit 1
 
-# Default command
-CMD ["python", "run_bot.py"]
+# Run the application
+CMD ["python", "app.py"]

@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  omex-sniper-api-dev:
+    build: 
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8000:8000"
+    environment:
+      - HELIUS_API_KEY=${HELIUS_API_KEY}
+      - PUMPPORTAL_API_KEY=${PUMPPORTAL_API_KEY}
+      - RPC_URL=${RPC_URL:-https://api.mainnet-beta.solana.com}
+      - DEBUG=true
+      - PORT=8000
+      - PYTHONPATH=/app
+    volumes:
+      - .:/app
+      - /app/.venv
+    restart: unless-stopped
+    networks:
+      - sniper-network
+
+networks:
+  sniper-network:
+    driver: bridge

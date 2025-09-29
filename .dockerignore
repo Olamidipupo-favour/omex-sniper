@@ -25,8 +25,10 @@ coverage.xml
 .hypothesis
 
 # Virtual environments
-venv/
+.env
+.venv
 env/
+venv/
 ENV/
 env.bak/
 venv.bak/
@@ -47,28 +49,30 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Docker
-Dockerfile
-.dockerignore
+# Documentation
+*.md
+docs/
+postman/
 
-# Logs and data
+# Testing
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
 logs/
 *.log
-data/
-*.json
-!bot_config.json
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
 
 # Temporary files
 *.tmp
 *.temp
-.cache/
-
-# Documentation
-README.md
-*.md
-
-# Test files
-test_*
-*_test.py
-quick_token_test.py
-get_test_token.py
