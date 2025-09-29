@@ -19,7 +19,7 @@ COPY pyproject.toml ./
 COPY .python-version ./
 
 # Install dependencies
-RUN uv sync --frozen --no-dev
+RUN uv sync --no-dev
 
 # Production stage
 FROM python:3.11-slim as production

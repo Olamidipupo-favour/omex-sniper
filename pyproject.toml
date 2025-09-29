@@ -22,7 +22,11 @@ dependencies = [
     "cryptography>=40.0.0",
     "construct>=2.10.67,<=2.10.68",
     "borsh-construct==0.1.0",
-    "keyring==24.3.0"
+    "keyring==24.3.0",
+    "sqlalchemy>=1.4.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-jose[cryptography]>=3.3.0",
+    "email-validator>=2.0.0"
 ]
 
 [project.scripts]

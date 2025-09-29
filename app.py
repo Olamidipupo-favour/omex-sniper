@@ -17,6 +17,8 @@ from services.sniper_service import SniperService
 from services.monitoring_service import MonitoringService
 from services.trading_service import TradingService
 from services.config_service import ConfigService
+from services.database_service import db_service
+from services.auth_service import auth_service, require_auth, require_admin, get_current_user
 from models.schemas import (
     TokenInfo, Position, TradeRequest, TradeResponse, 
     SniperConfig, HealthStatus, ErrorResponse
@@ -46,6 +48,9 @@ monitoring_ns = Namespace('monitoring', description='Token monitoring')
 trading_ns = Namespace('trading', description='Trading operations')
 config_ns = Namespace('config', description='Configuration management')
 health_ns = Namespace('health', description='Health and status')
+auth_ns = Namespace('auth', description='User authentication')
+user_ns = Namespace('user', description='User management')
+wallet_ns = Namespace('wallet', description='Wallet management')
 
 # Add namespaces to API
 api.add_namespace(sniper_ns, path='/sniper')
@@ -53,6 +58,9 @@ api.add_namespace(monitoring_ns, path='/monitoring')
 api.add_namespace(trading_ns, path='/trading')
 api.add_namespace(config_ns, path='/config')
 api.add_namespace(health_ns, path='/health')
+api.add_namespace(auth_ns, path='/auth')
+api.add_namespace(user_ns, path='/user')
+api.add_namespace(wallet_ns, path='/wallet')
 
 # Initialize services
 sniper_service = SniperService()
@@ -320,6 +328,151 @@ class WalletBalance(Resource):
             return {'balance': balance}, 200
         except Exception as e:
             logger.error(f"Failed to get wallet balance: {e}")
+            return {'error': str(e)}, 500
+
+# Authentication Endpoints
+@auth_ns.route('/register')
+class Register(Resource):
+    def post(self):
+        """Register new user"""
+        try:
+            data = request.get_json()
+            username = data.get('username')
+            email = data.get('email')
+            password = data.get('password')
+            
+            if not all([username, email, password]):
+                return {'error': 'Username, email, and password are required'}, 400
+            
+            result = auth_service.register_user(username, email, password)
+            return result, 201 if result['success'] else 400
+            
+        except Exception as e:
+            logger.error(f"Registration error: {e}")
+            return {'error': str(e)}, 500
+
+@auth_ns.route('/login')
+class Login(Resource):
+    def post(self):
+        """Login user"""
+        try:
+            data = request.get_json()
+            username = data.get('username')
+            password = data.get('password')
+            
+            if not all([username, password]):
+                return {'error': 'Username and password are required'}, 400
+            
+            result = auth_service.login_user(username, password)
+            return result, 200 if result['success'] else 401
+            
+        except Exception as e:
+            logger.error(f"Login error: {e}")
+            return {'error': str(e)}, 500
+
+@auth_ns.route('/logout')
+class Logout(Resource):
+    @require_auth
+    def post(self):
+        """Logout user"""
+        try:
+            auth_header = request.headers.get('Authorization')
+            token = auth_header.split(' ')[1] if auth_header else None
+            
+            if not token:
+                return {'error': 'No token provided'}, 400
+            
+            result = auth_service.logout_user(token)
+            return result, 200 if result['success'] else 400
+            
+        except Exception as e:
+            logger.error(f"Logout error: {e}")
+            return {'error': str(e)}, 500
+
+# User Management Endpoints
+@user_ns.route('/profile')
+class UserProfile(Resource):
+    @require_auth
+    def get(self):
+        """Get user profile"""
+        try:
+            user = g.current_user
+            result = auth_service.get_user_profile(user.id)
+            return result, 200 if result['success'] else 404
+            
+        except Exception as e:
+            logger.error(f"Profile error: {e}")
+            return {'error': str(e)}, 500
+
+# Wallet Management Endpoints
+@wallet_ns.route('/')
+class WalletList(Resource):
+    @require_auth
+    def get(self):
+        """Get user wallets"""
+        try:
+            user = g.current_user
+            wallets = db_service.get_user_wallets(user.id)
+            return {'wallets': wallets}, 200
+            
+        except Exception as e:
+            logger.error(f"Get wallets error: {e}")
+            return {'error': str(e)}, 500
+
+@wallet_ns.route('/')
+class CreateWallet(Resource):
+    @require_auth
+    def post(self):
+        """Create new wallet"""
+        try:
+            user = g.current_user
+            data = request.get_json()
+            
+            wallet_name = data.get('wallet_name')
+            private_key = data.get('private_key')
+            
+            if not all([wallet_name, private_key]):
+                return {'error': 'Wallet name and private key are required'}, 400
+            
+            from models.user import WalletCreate
+            wallet_data = WalletCreate(
+                wallet_name=wallet_name,
+                private_key=private_key
+            )
+            
+            wallet = db_service.create_wallet(user.id, wallet_data)
+            
+            if wallet:
+                return {'success': True, 'wallet': wallet}, 201
+            else:
+                return {'error': 'Failed to create wallet'}, 400
+                
+        except Exception as e:
+            logger.error(f"Create wallet error: {e}")
+            return {'error': str(e)}, 500
+
+@wallet_ns.route('/<int:wallet_id>/connect')
+class ConnectWallet(Resource):
+    @require_auth
+    def post(self, wallet_id):
+        """Connect to specific wallet"""
+        try:
+            user = g.current_user
+            private_key = db_service.get_wallet_private_key(user.id, wallet_id)
+            
+            if not private_key:
+                return {'error': 'Wallet not found or access denied'}, 404
+            
+            # Use existing config service to connect wallet
+            success = config_service.connect_wallet(private_key)
+            
+            if success:
+                return {'success': True, 'message': 'Wallet connected'}, 200
+            else:
+                return {'error': 'Failed to connect wallet'}, 400
+                
+        except Exception as e:
+            logger.error(f"Connect wallet error: {e}")
             return {'error': str(e)}, 500
 
 # Error handlers
