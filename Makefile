@@ -68,4 +68,4 @@ deploy:
 
 # Health check
 health:
-	curl -f http://localhost:8000/api/v1/health/ping || exit 1
+	curl -f http://localhost:6780/api/v1/health/ping || exit 1

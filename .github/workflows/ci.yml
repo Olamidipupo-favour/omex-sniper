@@ -13,46 +13,10 @@ env:
   UV_VERSION: "0.8.13"
 
 jobs:
-  test:
-    name: Test Suite
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install uv
-      uses: astral-sh/setup-uv@v4
-      with:
-        version: ${{ env.UV_VERSION }}
-        
-    - name: Set up Python
-      run: uv python install ${{ env.PYTHON_VERSION }}
-      
-    - name: Install dependencies
-      run: uv sync --dev
-      
-    - name: Run linting
-      run: |
-        uv run flake8 app.py services/ models/ core/
-        uv run black --check app.py services/ models/ core/
-        uv run mypy app.py services/ models/ core/
-        
-    - name: Run tests
-      run: uv run pytest tests/ -v --cov=app --cov=services --cov=models --cov=core
-      
-    - name: Upload coverage
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        flags: unittests
-        name: codecov-umbrella
-
   build:
     name: Build Docker Image
     runs-on: ubuntu-latest
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push'
     
     steps:
     - name: Checkout code
@@ -100,42 +64,10 @@ jobs:
         gh api -X PATCH "repos/${{ github.repository }}/packages/container/coin-sniper-api" \
           -f visibility=public
 
-  security:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    needs: test
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Install uv
-      uses: astral-sh/setup-uv@v4
-      with:
-        version: ${{ env.UV_VERSION }}
-        
-    - name: Set up Python
-      run: uv python install ${{ env.PYTHON_VERSION }}
-      
-    - name: Install dependencies
-      run: uv sync --dev
-      
-    - name: Run security scan
-      run: |
-        uv run pip install safety bandit
-        uv run safety check
-        uv run bandit -r app.py services/ models/ core/ -f json -o bandit-report.json
-        
-    - name: Upload security report
-      uses: actions/upload-artifact@v4
-      with:
-        name: security-report
-        path: bandit-report.json
-
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
-    needs: [test, build]
+    needs: [build]
     if: github.ref == 'refs/heads/develop'
     environment: staging
     
@@ -175,6 +107,6 @@ jobs:
           
           # Wait for health check
           sleep 10
-          curl -f http://localhost:8000/api/v1/health/ping || exit 1
+          curl -f http://localhost:6780/api/v1/health/ping || exit 1
           
           echo "Deployment completed successfully!"

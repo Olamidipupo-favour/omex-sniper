@@ -6,7 +6,7 @@ services:
     platform: linux/amd64
     container_name: omex-sniper-api
     ports:
-      - "8000:8000"
+      - "6780:8000"
     environment:
       # Required environment variables
       - HELIUS_API_KEY=76b8c433-0f3c-45e6-ba43-979179a978b0
