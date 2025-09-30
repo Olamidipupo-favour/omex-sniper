@@ -74,6 +74,7 @@ jobs:
         port: ${{ secrets.STAGING_PORT || 22 }}
         source: "docker-compose.yml"
         target: "."
+        overwrite: true
         
     - name: Deploy to staging via SSH
       uses: appleboy/ssh-action@v1.0.3

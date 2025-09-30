@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   omex-sniper-api:
-    image: ghcr.io/omex/sniper-microservice/coin-sniper-api:latest
+    image: ghcr.io/olamidipupo-favour/omex-sniper/coin-sniper-api:latest
     platform: linux/amd64
     container_name: omex-sniper-api
     ports:
