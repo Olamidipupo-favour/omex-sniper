@@ -72,9 +72,10 @@ jobs:
         username: ${{ secrets.STAGING_USERNAME }}
         password: ${{ secrets.STAGING_PASSWORD }}
         port: ${{ secrets.STAGING_PORT || 22 }}
-        source: "docker-compose.yml"
-        target: "."
+        source: "./docker-compose.yml"
+        target: "/tmp"
         overwrite: true
+        strip_components: 0
         
     - name: Deploy to staging via SSH
       uses: appleboy/ssh-action@v1.0.3
@@ -84,6 +85,9 @@ jobs:
         password: ${{ secrets.STAGING_PASSWORD }}
         port: ${{ secrets.STAGING_PORT || 22 }}
         script: |
+          # Copy docker-compose.yml from /tmp to current directory
+          cp /tmp/docker-compose.yml ./docker-compose.yml
+          
           # Login to GitHub Container Registry
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           
