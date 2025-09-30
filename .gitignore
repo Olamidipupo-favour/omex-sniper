@@ -1,3 +1,4 @@
-.env
 __pycache__/
 postman/
+config.bat
+node_modules
