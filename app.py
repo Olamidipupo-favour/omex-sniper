@@ -4,6 +4,9 @@ Omex Coin Sniper Microservice API
 A well-documented API for coin sniping operations on Solana blockchain
 """
 
+import utils.http_session
+import utils.transport
+import utils.session
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_restx import Api, Resource, fields, Namespace
